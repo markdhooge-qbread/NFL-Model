@@ -18,8 +18,15 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
+import importlib
+
 import flowlib as fl
 import playerlib as pl
+
+# Streamlit Cloud keeps imported helper modules in memory across code updates, so a new app.py can run against an
+# old flowlib.py/playerlib.py until the app is rebooted. Reload them so app.py and its helpers always match.
+fl = importlib.reload(fl)
+pl = importlib.reload(pl)
 
 EST = ZoneInfo("America/New_York")
 TODAY = datetime.datetime.now(EST).date()
