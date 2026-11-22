@@ -14,7 +14,7 @@ giveaways, pass rate leading and trailing, 4th down go rate, two-minute points, 
 score-adjusted EPA (EPA minus the league average for the same score and quarter, the NFL version of hockey score effects).
 
 ## Streamlit app
-`app.py` has six tabs: Slate (every game in a week, with finals graded), Matchup (any two teams, with injury inputs), Players (player projections with defense vs position and a DK line check),
+`app.py` has seven tabs: Live (today's games from ESPN's free scoreboard with score, quarter, clock, possession, model projection vs actual by quarter, and each flagged bet/lean/watch graded live; auto-refreshes every 60 seconds; flags come from `live_flags.csv`), Slate (every game in a week, with finals graded), Matchup (any two teams, with injury inputs), Players (player projections with defense vs position and a DK line check),
 Teams (season stat profiles), Flow Chart (cumulative score-adjusted EPA and win probability for any finished game) and
 Record (this season's hit rates on games the model never trained on).
 

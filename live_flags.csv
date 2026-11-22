@@ -1,0 +1,17 @@
+season,week,game,tier,flag,market,side,line,note
+2026,11,NO@CHI,BET,Injury gap,spread,CHI,-11.5,healthier team ATS (2+ more non-QB starters out on NO)
+2026,11,TEN@DAL,BET,Injury gap,spread,TEN,7.5,healthier team ATS (2+ more non-QB starters out on DAL)
+2026,11,ARI@KC,BET,Wind under,total,under,40.5,15+ mph outdoor wind
+2026,11,MIN@SF,LEAN,Primetime under,total,under,46.5,Sunday night under
+2026,11,CIN@WAS,LEAN,Primetime under,total,under,54.5,Monday night under
+2026,11,TB@DET,WATCH,Model total under,total,under,46.5,7+ pt model total edge (watch only)
+2026,11,ARI@KC,WATCH,Model total over,total,over,40.5,7+ pt model total edge (watch only)
+2026,11,NYJ@LAC,WATCH,Model total under,total,under,42.5,7+ pt model total edge (watch only)
+2026,11,MIA@BUF,WATCH,Tiebreaker,spread,MIA,16.5,tiebreaker side (watch only)
+2026,11,BAL@CAR,WATCH,Tiebreaker,spread,CAR,-3,tiebreaker side (watch only)
+2026,11,TEN@DAL,WATCH,Tiebreaker,spread,DAL,-7.5,tiebreaker side (watch only)
+2026,11,MIN@SF,WATCH,Tiebreaker,spread,MIN,3.5,tiebreaker side (watch only)
+2026,12,LV@CLE,LEAN,Primetime under,total,under,40.5,Sunday night under
+2026,12,CAR@TB,LEAN,Primetime under,total,under,43.5,Monday night under
+2026,12,ATL@MIN,WATCH,Model total under,total,under,42.5,7+ pt model total edge (watch only)
+2026,12,CAR@TB,WATCH,Model total under,total,under,43.5,7+ pt model total edge (watch only)
