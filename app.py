@@ -6,7 +6,7 @@ and the chance the home team scores first, leads at half, scores last before hal
 Weights come from model.json (built offline by train.py). On start the app downloads this season's and last
 season's nflverse play-by-play to compute current team ratings.
 
-Tabs: Slate, Matchup, Teams, Flow Chart, Record.
+Tabs: Live, Slate, Matchup, Players, Teams, Flow Chart, Record.
 """
 import datetime
 import json
@@ -21,12 +21,14 @@ import streamlit as st
 import importlib
 
 import flowlib as fl
+import livelib as lv
 import playerlib as pl
 
 # Streamlit Cloud keeps imported helper modules in memory across code updates, so a new app.py can run against an
 # old flowlib.py/playerlib.py until the app is rebooted. Reload them so app.py and its helpers always match.
 fl = importlib.reload(fl)
 pl = importlib.reload(pl)
+lv = importlib.reload(lv)
 
 EST = ZoneInfo("America/New_York")
 TODAY = datetime.datetime.now(EST).date()
@@ -65,6 +67,15 @@ st_html(
       .final {background:#334155;color:#cbd5e1;}
       .section {font-size:13px;font-weight:800;color:#38bdf8;margin:4px 0;}
       .meta {color:#94a3b8;font-size:12px;margin-bottom:8px;}
+      .pend {background:#1e293b;color:#94a3b8;border:1px solid #334155;}
+      .push {background:#713f12;color:#fde68a;}
+      .livedot {display:inline-block;width:8px;height:8px;border-radius:50%;background:#ef4444;margin-right:5px;}
+      .score {display:flex;justify-content:space-between;align-items:center;font-size:22px;font-weight:800;
+              padding:4px 2px 6px 2px;}
+      .score .tm {display:flex;align-items:center;gap:6px;}
+      .poss {font-size:12px;color:#fbbf24;}
+      .flag-row {display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;font-size:12px;
+                 padding:5px 0;border-top:1px solid #334155;color:#cbd5e1;}
     </style>
     """)
 
@@ -198,8 +209,157 @@ st_html(f"<div class='section'>🏈 NFL Game Flow Model · {SEASON} season</div>
         f"{SEASON - 1} early in the year. Model trained on {MODEL['seasons'][0]}–{MODEL['seasons'][1]} "
         f"({MODEL['games']:,} games).</div>")
 
-tab_slate, tab_match, tab_players, tab_teams, tab_flow, tab_rec = st.tabs(
-    ["Slate", "Matchup", "Players", "Teams", "Flow Chart", "Record"])
+tab_live, tab_slate, tab_match, tab_players, tab_teams, tab_flow, tab_rec = st.tabs(
+    ["Live", "Slate", "Matchup", "Players", "Teams", "Flow Chart", "Record"])
+
+
+@st.cache_data(ttl=25, show_spinner=False)
+def live_scoreboard():
+    return lv.parse_scoreboard(lv.fetch_scoreboard())
+
+
+def live_model(g):
+    """Model projection for a live game (pre-game ratings), or None if the game is not in the nflverse schedule."""
+    rows = GAMES[(GAMES.home_team == g["home"]) & (GAMES.away_team == g["away"])].sort_values("gameday")
+    if rows.empty:
+        return None, None
+    row = rows.iloc[-1]
+    try:
+        p = predict_played(row.game_id) if pd.notna(row.result) else None
+        if p is None:
+            p = predict_upcoming(g["home"], g["away"], row.roof in ("dome", "closed"))
+    except Exception:  # noqa: BLE001
+        return None, row
+    return p, row
+
+
+BADGE = {"winning": ("hit", "WINNING"), "won": ("hit", "WON"), "losing": ("miss", "LOSING"),
+         "lost": ("miss", "LOST"), "push": ("push", "PUSH"), "pending": ("pend", "PENDING")}
+
+
+def live_card(g, p, flags):
+    a, h = g["away"], g["home"]
+    if g["state"] == "in":
+        status = f"<span class='livedot'></span><b>{g['detail']}</b>"
+    elif g["state"] == "post":
+        status = f"<span class='badge final'>{g['detail'] or 'FINAL'}</span>"
+    else:
+        status = g["kick_utc"].tz_convert(EST).strftime("%a %-I:%M %p ET") if pd.notna(g["kick_utc"]) else g["detail"]
+    sub = " · ".join(x for x in [status, g["broadcast"]] if x)
+    pos = lambda t: " <span class='poss'>🏈</span>" if g["state"] == "in" and g["possession"] == t else ""
+    score = (f"<div class='score'><span class='tm'>{a}{pos(a)}</span><span>{g['away_score']:.0f} – "
+             f"{g['home_score']:.0f}</span><span class='tm'>{pos(h)}{h}</span></div>") if g["state"] != "pre" else ""
+    sit = ""
+    if g["state"] == "in" and (g["down_dist"] or g["last_play"]):
+        rz = " · <b style='color:#f87171'>RED ZONE</b>" if g["red_zone"] else ""
+        sit = f"<div class='meta'>{g['down_dist']}{rz}{' · ' + g['last_play'] if g['last_play'] else ''}</div>"
+    summ = []
+    if p is not None:
+        summ.append(f"<span>Model <b>{a} {p['away_score']:.1f}–{p['home_score']:.1f} {h}</b></span>")
+        summ.append(f"<span>Model total <b>{p['total']:.1f}</b></span>")
+    pt = lv.pace_total(g, p["total"] if p is not None else None)
+    if g["state"] == "in" and pt is not None:
+        summ.append(f"<span>On pace <b>{pt:.1f}</b></span>")
+    if g["espn_line"] or g["espn_total"]:
+        summ.append(f"<span>Line <b>{g['espn_line'] or '–'}</b> · O/U <b>{g['espn_total'] or '–'}</b></span>")
+    summ = f"<div class='summary'>{''.join(summ)}</div>" if summ else ""
+    qt = ""
+    if p is not None:
+        nq = max(4, len(g["home_q"]))
+        head = "".join(f"<th>{'Q' + str(i) if i <= 4 else 'OT'}</th>" for i in range(1, nq + 1))
+
+        def qrow(tm, side, actual):
+            cells = ""
+            for i in range(1, nq + 1):
+                m = f"{p[f'{side}_q{i}']:.1f}" if i <= 4 else "–"
+                act = f"<b>{actual[i - 1]:.0f}</b> / " if i <= len(actual) else ""
+                cells += f"<td>{act}{m}</td>"
+            return f"<tr><td><b>{tm}</b></td>{cells}</tr>"
+
+        qt = (f"<div class='tbl-wrap'><table class='tbl'><tr><th>Actual / model</th>{head}</tr>"
+              f"{qrow(a, 'a', g['away_q'])}{qrow(h, 'h', g['home_q'])}</table></div>")
+    fl_html = ""
+    for _, f in flags.iterrows():
+        stt, m, txt = lv.grade_flag(f, g, pt)
+        cls, lab = BADGE[stt]
+        side = f["side"].upper() if f["market"] == "total" else f"{f['side']} {f['line']:+g}"
+        line = f" {f['line']:g}" if f["market"] == "total" else ""
+        mtxt = f" ({m:+.1f})" if m is not None else ""
+        fl_html += (f"<div class='flag-row'><span><span class='badge {'hit' if f['tier'] == 'BET' else 'final'}'>"
+                    f"{f['tier']}</span> <b>{f['flag']}: {side}{line}</b> <span class='card-sub'>{f['note']}</span>"
+                    f"</span><span>{txt}{mtxt} <span class='badge {cls}'>{lab}</span></span></div>")
+    return f"""
+    <div class='card'>
+      <div class='card-head'><div class='card-title'>{a} @ {h}</div><div class='card-sub'>{sub}</div></div>
+      {score}{sit}{summ}{qt}{fl_html}
+    </div>"""
+
+
+with tab_live:
+    c1, c2, c3 = st.columns([1.3, 1, 1])
+    show = c1.radio("Show", ["Live now", "Today", "Whole week"], index=1, horizontal=True, key="live_show")
+    only_flags = c2.toggle("Flagged games only", key="live_flags_only")
+    auto = c3.toggle("Auto-refresh (60s)", value=True, key="live_auto")
+    FLAGS = lv.load_flags(HERE / "live_flags.csv")
+
+    @st.fragment(run_every=60 if auto else None)
+    def live_board():
+        try:
+            games = live_scoreboard()
+        except Exception as exc:  # noqa: BLE001
+            st.error(f"Could not reach the ESPN scoreboard: {exc}")
+            return
+        if not games:
+            st.info("ESPN has no games on the scoreboard right now.")
+            return
+        now = pd.Timestamp.now(tz=EST)
+        if show == "Live now":
+            games = [g for g in games if g["state"] == "in"]
+        elif show == "Today":
+            games = [g for g in games if pd.notna(g["kick_utc"]) and g["kick_utc"].tz_convert(EST).date() == now.date()]
+        wk = FLAGS[FLAGS.season == SEASON]
+        names = {g["game"] for g in live_scoreboard()}
+        wk = wk[wk.game.isin(names)]  # this ESPN week's flags only
+        if only_flags:
+            games = [g for g in games if g["game"] in set(wk.game)]
+        # flag tally across the whole week (bets + leans; watch shown separately)
+        allg = {g["game"]: g for g in live_scoreboard()}
+        paces = {}
+        for k, g in allg.items():
+            p, _ = live_model(g)
+            paces[k] = lv.pace_total(g, p["total"] if p is not None else None)
+        tally = {}
+        for _, f in wk.iterrows():
+            stt = lv.grade_flag(f, allg.get(f["game"]), paces.get(f["game"]))[0]
+            grp = "watch" if f["tier"] == "WATCH" else "play"
+            tally.setdefault(grp, {}).setdefault(stt, 0)
+            tally[grp][stt] += 1
+
+        def tally_txt(d):
+            order = ["won", "lost", "push", "winning", "losing", "pending"]
+            return " · ".join(f"{d[k]} {k}" for k in order if d.get(k)) or "none"
+
+        st_html(f"<div class='meta'>Updated {now.strftime('%-I:%M:%S %p ET')} from ESPN · "
+                f"<b>Bets & leans:</b> {tally_txt(tally.get('play', {}))} · "
+                f"<b>Watch:</b> {tally_txt(tally.get('watch', {}))}</div>")
+        if not games:
+            st.info({"Live now": "No games in progress right now.",
+                     "Today": "No games today. Switch to Whole week."}.get(show, "No games match."))
+            return
+        order = {"in": 0, "pre": 1, "post": 2}
+        games = sorted(games, key=lambda g: (order.get(g["state"], 3), g["kick_utc"]))
+        for g in games:
+            p, _ = live_model(g)
+            f = wk[wk.game == g["game"]].sort_values("tier_rank")
+            st_html(live_card(g, p, f))
+
+    live_board()
+    st_html("<div class='meta'>Flags come from <code>live_flags.csv</code> (v3: BET = injury gap ATS and 15+ mph wind "
+            "under; LEAN = Sunday/Monday night under; WATCH = model total 7+ pts off and tiebreakers, not bets). "
+            "Lines are the ones logged when each flag fired. Model numbers are the pre-game game flow projection; "
+            "'On pace' adds the model's scoring rate for the time left to the current total, and live totals flags "
+            "are graded on that pace (an under only counts as lost once the line is passed). Quarter cells read "
+            "actual / model.</div>")
 
 with tab_slate:
     weeks = sorted(GAMES.week.unique())
