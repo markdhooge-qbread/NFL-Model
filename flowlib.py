@@ -17,9 +17,10 @@ NUM_T = ["h_q1", "a_q1", "h_q2", "a_q2", "h_q3", "a_q3", "h_q4", "a_q4", "h_half
 BIN_T = ["home_scores_first", "home_leads_half", "home_last_1h", "home_first_2h", "home_win"]
 
 
-def load_pbp(seasons, local=None):
+def load_pbp(seasons, local=None, extra=()):
     src = (lambda y: f"{local}/pbp_{y}.csv.gz") if local else (lambda y: PBP_URL.format(y=y))
-    return pd.concat([pd.read_csv(src(y), usecols=COLS, low_memory=False) for y in seasons], ignore_index=True)
+    cols = COLS + [c for c in extra if c not in COLS]
+    return pd.concat([pd.read_csv(src(y), usecols=cols, low_memory=False) for y in seasons], ignore_index=True)
 
 
 def load_games(local=None):

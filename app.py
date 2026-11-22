@@ -19,11 +19,14 @@ import pandas as pd
 import streamlit as st
 
 import flowlib as fl
+import playerlib as pl
 
 EST = ZoneInfo("America/New_York")
 TODAY = datetime.datetime.now(EST).date()
 SEASON = TODAY.year if TODAY.month >= 8 else TODAY.year - 1
 HERE = Path(__file__).parent
+PLAYERS_URL = "https://github.com/nflverse/nflverse-data/releases/download/players/players.csv"
+INJ_URL = "https://github.com/nflverse/nflverse-data/releases/download/injuries/injuries_{season}.csv"
 
 st.set_page_config(page_title="NFL Game Flow Model", page_icon="🏈", layout="centered")
 
@@ -67,9 +70,14 @@ def load_model():
     return json.loads((HERE / "model.json").read_text())
 
 
+@st.cache_data(show_spinner=False)
+def load_player_model():
+    return json.loads((HERE / "player_model.json").read_text())
+
+
 @st.cache_data(ttl=6 * 3600, show_spinner="Loading nflverse play-by-play (about 30 seconds)...")
 def load_data(season):
-    raw = fl.load_pbp([season - 1, season])
+    raw = fl.load_pbp([season - 1, season], extra=pl.PCOLS)
     games = fl.load_games()
     inj_path = HERE / "injury_load_hist.csv"
     J = pd.read_csv(inj_path) if inj_path.exists() else None
@@ -79,14 +87,34 @@ def load_data(season):
     sp = B["sp"][B["sp"].season == season][keep]
     TG = B["TG"][B["TG"].season == season]
     M = B["M"][B["M"].season == season]
-    return games[games.season == season], R, M, TG, sp
+    # players: history + rows for the next unplayed week
+    players = pd.read_csv(PLAYERS_URL, low_memory=False, usecols=["gsis_id", "display_name", "position"])
+    gs = games[games.season == season]
+    nxt = gs[gs.result.isna()]
+    nxt = nxt[nxt.week == nxt.week.min()] if len(nxt) else nxt
+    s, q = pl.player_games(raw)
+    S = pl.skill_dvp(pl.skill_features(pl.add_positions(pl.add_future(s, nxt), players)))
+    qf = pl.add_future(q, nxt)
+    listed = set(nxt.home_qb_id.dropna()) | set(nxt.away_qb_id.dropna())
+    qf = qf[(qf.fut == 0) | qf.pid.isin(listed) | ~qf.posteam.isin(
+        set(nxt.loc[nxt.home_qb_id.notna(), "home_team"]) | set(nxt.loc[nxt.away_qb_id.notna(), "away_team"]))]
+    Q = pl.qb_dvp(pl.qb_features(qf))
+    Q = Q.join(players.set_index("gsis_id").display_name.rename("full_name"), on="pid")
+    Q["name"] = Q.full_name.fillna(Q.name)
+    S, Q = S[S.season == season], Q[Q.season == season]
+    try:
+        inj = pd.read_csv(INJ_URL.format(season=season), usecols=["season", "week", "gsis_id", "report_status"])
+    except Exception:  # noqa: BLE001
+        inj = pd.DataFrame(columns=["season", "week", "gsis_id", "report_status"])
+    return gs, R, M, TG, sp, S, Q, inj
 
 
 MODEL = load_model()
+PMODEL = load_player_model()
 FEATS = MODEL["features"]
 INJ_DEFAULT = tuple(MODEL["inj_default"])
 try:
-    GAMES, RATINGS, MATCH, TEAMG, PLAYS = load_data(SEASON)
+    GAMES, RATINGS, MATCH, TEAMG, PLAYS, SKILL, QBS, INJ = load_data(SEASON)
 except Exception as exc:  # noqa: BLE001
     st.error(f"Could not load nflverse data: {exc}")
     st.stop()
@@ -163,7 +191,8 @@ st_html(f"<div class='section'>🏈 NFL Game Flow Model · {SEASON} season</div>
         f"{SEASON - 1} early in the year. Model trained on {MODEL['seasons'][0]}–{MODEL['seasons'][1]} "
         f"({MODEL['games']:,} games).</div>")
 
-tab_slate, tab_match, tab_teams, tab_flow, tab_rec = st.tabs(["Slate", "Matchup", "Teams", "Flow Chart", "Record"])
+tab_slate, tab_match, tab_players, tab_teams, tab_flow, tab_rec = st.tabs(
+    ["Slate", "Matchup", "Players", "Teams", "Flow Chart", "Record"])
 
 with tab_slate:
     weeks = sorted(GAMES.week.unique())
@@ -210,6 +239,144 @@ with tab_match:
     else:
         p = predict_upcoming(home, away, indoor, {away: (ai_o, ai_d), home: (hi_o, hi_d)})
         st_html(game_card({"away_team": away, "home_team": home}, p))
+
+with tab_players:
+    from math import erf, sqrt
+
+    def norm_cdf(z):
+        return 0.5 * (1 + erf(z / sqrt(2)))
+
+    pweeks = sorted(GAMES.week.unique())
+    p_unplayed = GAMES[GAMES.result.isna()]
+    p_default = int(p_unplayed.week.min()) if len(p_unplayed) else int(max(pweeks))
+    pc1, pc2 = st.columns([1, 3])
+    pweek = pc1.selectbox("Week", pweeks, index=pweeks.index(p_default), key="pl_week")
+    pwk = GAMES[GAMES.week == pweek].sort_values(["gameday", "gametime"])
+    glabels = [f"{r.away_team} @ {r.home_team}" for r in pwk.itertuples()]
+    gsel = pc2.selectbox("Game", glabels, key="pl_game")
+    g = pwk.iloc[glabels.index(gsel)]
+    played = pd.notna(g.result)
+    gp = (predict_played(g.game_id) if played else None) or predict_upcoming(
+        g.home_team, g.away_team, g.roof in ("dome", "closed"))
+    ctx = {g.home_team: {"c_pts": gp["home_score"], "c_margin": gp["home_score"] - gp["away_score"],
+                         "c_plays": gp["total_plays"], "c_home": 1.0},
+           g.away_team: {"c_pts": gp["away_score"], "c_margin": gp["away_score"] - gp["home_score"],
+                         "c_plays": gp["total_plays"], "c_home": 0.0}}
+    upcoming_week = not played and (SKILL[(SKILL.game_id == g.game_id) & (SKILL.fut == 1)].shape[0] > 0)
+    if not played and not upcoming_week:
+        st.info("Player projections are available for the next unplayed week and for finished games.")
+    else:
+        inj_wk = INJ[(INJ.season == SEASON) & (INJ.week == pweek)]
+        out_ids = set(inj_wk[inj_wk.report_status.isin(["Out", "Doubtful"])].gsis_id)
+        q_ids = set(inj_wk[inj_wk.report_status == "Questionable"].gsis_id)
+
+        def with_ctx(df):
+            c = pd.DataFrame([ctx[t] for t in df.posteam], index=df.index)
+            return pd.concat([df.drop(columns=[x for x in pl.CTX if x in df.columns]), c], axis=1)
+
+        sk = SKILL[SKILL.game_id == g.game_id]
+        sk = sk[(sk.n >= 2) & ((sk.p_tgt >= 2) | (sk.p_car >= 3)) & sk.pos.isin(["RB", "WR", "TE", "QB"])]
+        if not played:
+            sk = sk[~sk.pid.isin(out_ids)]
+        sk = with_ctx(sk.copy())
+        for mk in ["rec_yds", "rec", "rush_yds", "car"]:
+            sk["proj_" + mk] = pl.project(PMODEL, sk, mk) if len(sk) else []
+        sk["proj_td"] = pl.project(PMODEL, sk, "td") if len(sk) else []
+        qb = QBS[(QBS.game_id == g.game_id) & (QBS.n >= 1) & (QBS.p_db >= 15)]
+        if played:
+            qb = qb.sort_values("db", ascending=False).groupby("posteam").head(1)
+        qb = with_ctx(qb.copy())
+        qb["proj_pass_yds"] = pl.project(PMODEL, qb, "pass_yds") if len(qb) else []
+
+        def lean(proj, avg, mk, ok=True):
+            if not ok or pd.isna(avg) or avg <= 0:
+                return ""
+            d = proj - avg
+            if abs(d) >= pl.FLAG_MIN[mk] and abs(d) / avg >= .10:
+                return "<span class='badge hit'>▲ over</span>" if d > 0 else "<span class='badge miss'>▼ under</span>"
+            return ""
+
+        def dvp_txt(v):
+            if pd.isna(v):
+                return "–"
+            col = "#86efac" if v >= .10 else ("#fca5a5" if v <= -.10 else "#cbd5e1")
+            return f"<b style='color:{col}'>{v:+.0%}</b>"
+
+        def cell(proj, avg, mk, actual=None, show=True, ok=True):
+            if not show:
+                return "<td>–</td>"
+            fmt = "{:.1f}" if mk in ("rec", "car") else "{:.0f}"
+            act = f"<br><span class='card-sub'>act {fmt.format(actual)}</span>" if actual is not None and pd.notna(actual) else ""
+            return (f"<td><b>{fmt.format(proj)}</b> <span class='card-sub'>avg {fmt.format(avg)}</span> "
+                    f"{lean(proj, avg, mk, ok)}{act}</td>")
+
+        st_html(f"<div class='meta'>Projections use each player's season so far, last season, role trend, the "
+                f"defense's allowed stats and defense vs position, and the game flow model's script for this game "
+                f"({g.away_team} {gp['away_score']:.1f} – {g.home_team} {gp['home_score']:.1f}, {gp['total_plays']:.0f} plays). "
+                "<b>Def vs pos</b> = what this defense allows to the player's position, vs league average "
+                "(green = soft matchup; QBs show rushing allowed to QBs). ▲/▼ = projection 10%+ off the season average for "
+                "regular players (3+ games, 2.5+ targets or 4+ carries), the gaps that held up in testing."
+                + (" Players ruled Out or Doubtful are removed." if not played else "") + "</div>")
+        for team, opp in ((g.away_team, g.home_team), (g.home_team, g.away_team)):
+            t_sk = sk[sk.posteam == team].copy()
+            t_qb = qb[qb.posteam == team]
+            dv = t_sk.groupby("pos")[["dvp_rec", "dvp_rush"]].mean()
+            qdv = t_qb.dvp_pass.mean() if len(t_qb) else np.nan
+            chips = " · ".join([f"QB pass {dvp_txt(qdv)}"] +
+                               [f"{p} rec {dvp_txt(dv.dvp_rec.get(p))}" for p in ("WR", "TE", "RB") if p in dv.index] +
+                               ([f"RB rush {dvp_txt(dv.dvp_rush.get('RB'))}"] if "RB" in dv.index else []))
+            qrows = "".join(
+                f"<tr><td><b>{r.name}</b> QB{' (Q)' if r.pid in q_ids and not played else ''}</td>"
+                + cell(r.proj_pass_yds, r.p_pass_yds, "pass_yds", r.pass_yds if played else None, True, r.n >= 3)
+                + f"<td>{dvp_txt(r.dvp_pass)}</td></tr>" for r in t_qb.itertuples())
+            t_sk["order"] = t_sk.proj_rec_yds + t_sk.proj_rush_yds
+            srows = "".join(
+                f"<tr><td><b>{r.name}</b> {r.pos}{' (Q)' if r.pid in q_ids and not played else ''}</td>"
+                + cell(r.proj_rec, r.p_rec, "rec", r.rec if played else None, r.p_tgt >= 1, r.n >= 3 and r.p_tgt >= 2.5)
+                + cell(r.proj_rec_yds, r.p_rec_yds, "rec_yds", r.rec_yds if played else None, r.p_tgt >= 1,
+                       r.n >= 3 and r.p_tgt >= 2.5)
+                + cell(r.proj_car, r.p_car, "car", r.car if played else None, r.p_car >= 2, r.n >= 3 and r.p_car >= 4)
+                + cell(r.proj_rush_yds, r.p_rush_yds, "rush_yds", r.rush_yds if played else None, r.p_car >= 2,
+                       r.n >= 3 and r.p_car >= 4)
+                + f"<td><b>{r.proj_td:.0%}</b>{'<br><span class=card-sub>TD</span>' if played and r.td > 0 else ''}</td>"
+                + f"<td>{dvp_txt(r.dvp_rush if r.pos == 'QB' or (r.pos == 'RB' and r.p_car >= r.p_tgt) else r.dvp_rec)}</td></tr>"
+                for r in t_sk.sort_values("order", ascending=False).itertuples())
+            st_html(f"""
+            <div class='card'>
+              <div class='card-head'><div class='card-title'>{team} vs {opp} defense</div>
+                <div class='card-sub'>projected {ctx[team]['c_pts']:.1f} pts</div></div>
+              <div class='meta'>{opp} allows: {chips}</div>
+              <div class='tbl-wrap'><table class='tbl'>
+                <tr><th>QB</th><th>Pass yds</th><th>Def vs pos</th></tr>{qrows or "<tr><td colspan=3>No QB with a start this season yet</td></tr>"}</table></div>
+              <div class='tbl-wrap' style='margin-top:8px'><table class='tbl'>
+                <tr><th>Player</th><th>Rec</th><th>Rec yds</th><th>Car</th><th>Rush yds</th><th>Any TD</th><th>Def vs pos</th></tr>
+                {srows}</table></div>
+            </div>""")
+
+        # DK line check
+        st_html("<div class='section'>🔎 Line check</div>")
+        opts = [(f"{r.name} ({r.posteam}) · Pass yds", "pass_yds", r) for r in qb.itertuples()]
+        for r in sk.sort_values("proj_rec_yds", ascending=False).itertuples():
+            if r.p_tgt >= 1:
+                opts += [(f"{r.name} ({r.posteam}) · Rec yds", "rec_yds", r), (f"{r.name} ({r.posteam}) · Receptions", "rec", r)]
+            if r.p_car >= 2:
+                opts += [(f"{r.name} ({r.posteam}) · Rush yds", "rush_yds", r), (f"{r.name} ({r.posteam}) · Carries", "car", r)]
+        if opts:
+            lc1, lc2 = st.columns([3, 1])
+            pick = lc1.selectbox("Player and market", [o[0] for o in opts], key="pl_lc")
+            _, mk, r = opts[[o[0] for o in opts].index(pick)]
+            proj = getattr(r, "proj_" + mk)
+            line = lc2.number_input("DK line", 0.0, 600.0, float(round(proj * 2) / 2 - 0.5 if proj > 1 else 0.5), 0.5,
+                                    key=f"pl_line_{pick}")
+            m = PMODEL["markets"][mk]
+            med = proj + m.get("median_shift", 0)
+            p_over = 1 - norm_cdf((line - med) / m["sd"])
+            side = "OVER" if p_over > .5 else "UNDER"
+            st_html(f"<div class='card'><div class='summary'><span>Projection <b>{proj:.1f}</b></span>"
+                    f"<span>Typical outcome (median) <b>{med:.1f}</b></span><span>Over {line:g} <b>{p_over:.0%}</b></span>"
+                    f"<span>Under <b>{1 - p_over:.0%}</b></span><span>Model side <b>{side}</b></span></div>"
+                    f"<div class='meta'>Rough odds from the model's typical miss ({m['sd']:.0f} on yards in testing). "
+                    "Not tested against real DraftKings lines, so treat it as a lean, not an edge.</div></div>")
 
 with tab_teams:
     show = {"o_third_conv": "3rd% off", "d_third_conv": "3rd% def", "o_third_ytg": "3rd ytg off",

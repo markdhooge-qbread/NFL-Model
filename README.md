@@ -14,7 +14,7 @@ giveaways, pass rate leading and trailing, 4th down go rate, two-minute points, 
 score-adjusted EPA (EPA minus the league average for the same score and quarter, the NFL version of hockey score effects).
 
 ## Streamlit app
-`app.py` has five tabs: Slate (every game in a week, with finals graded), Matchup (any two teams, with injury inputs),
+`app.py` has six tabs: Slate (every game in a week, with finals graded), Matchup (any two teams, with injury inputs), Players (player projections with defense vs position and a DK line check),
 Teams (season stat profiles), Flow Chart (cumulative score-adjusted EPA and win probability for any finished game) and
 Record (this season's hit rates on games the model never trained on).
 
@@ -24,12 +24,27 @@ Record (this season's hit rates on games the model never trained on).
 The app downloads this season's and last season's nflverse play-by-play when it starts (cached for 6 hours), so team
 ratings update on their own each week. Upcoming games use league-average injuries; set real ones in the Matchup tab.
 
+## Players tab
+For each game: QB passing yards and every regular RB/WR/TE's receptions, receiving yards, carries, rushing yards and
+anytime TD chance. A projection starts from the player's season average and adjusts for last season, role trend
+(target/carry share last 3 games), efficiency regression, what the defense allows, **defense vs position** (yards and
+targets this defense allows to WRs, TEs, RBs, QBs vs league average), and the game flow model's script for the game
+(team points, margin, total plays). Finished games show projection vs actual. Out/Doubtful players are removed using
+nflverse injury reports.
+
+Backtest (fit 2015-22, graded 2023-26): projections beat the season average on every market (rec yds MAE 22.4 vs 23.2,
+pass yds 59.1 vs 61.4). Flags (projection 10%+ off average) went: rec yds over 57% / under 71% (base 42% / 58%),
+rush yds over 54% / under 66%, pass yds over 71% / under 62%. Anytime TD is well calibrated. Defense vs position on its
+own is weaker than the player's average (WR/TE corr ~0.04); it matters more for RB rushing and QB passing (~0.14).
+None of this is tested against real DraftKings lines.
+
 ## Retraining
 `model.json` holds the trained weights (no scikit-learn needed in the app). Retrain once a season, or whenever the
 model code changes:
 
     pip install scikit-learn pandas numpy
-    python train.py        # downloads 2015-current from nflverse, about 5 minutes
+    python train.py          # game flow weights -> model.json (about 5 minutes)
+    python player_train.py   # player weights -> player_model.json (about 5 minutes)
 
 `train.py` fits on every season before the current one, so the Record tab is graded on games the model never saw.
 `injury_load_hist.csv` is the snap-weighted injury history used in training.
