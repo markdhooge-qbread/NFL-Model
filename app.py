@@ -209,8 +209,8 @@ st_html(f"<div class='section'>🏈 NFL Game Flow Model · {SEASON} season</div>
         f"{SEASON - 1} early in the year. Model trained on {MODEL['seasons'][0]}–{MODEL['seasons'][1]} "
         f"({MODEL['games']:,} games).</div>")
 
-tab_bets, tab_live, tab_slate, tab_match, tab_players, tab_teams, tab_flow, tab_rec = st.tabs(
-    ["Bets", "Live", "Slate", "Matchup", "Players", "Teams", "Flow Chart", "Record"])
+tab_bets, tab_games, tab_players, tab_teams, tab_flow, tab_rec = st.tabs(
+    ["Bets", "Games", "Players", "Teams", "Flow Chart", "Record"])
 BETS = lv.load_bets(HERE / "bets.csv")
 
 
@@ -280,6 +280,14 @@ def live_card(g, p, flags):
 
         qt = (f"<div class='tbl-wrap'><table class='tbl'><tr><th>Actual / model</th>{head}</tr>"
               f"{qrow(a, 'a', g['away_q'])}{qrow(h, 'h', g['home_q'])}</table></div>")
+    return f"""
+    <div class='card'>
+      <div class='card-head'><div class='card-title'>{a} @ {h}</div><div class='card-sub'>{sub}</div></div>
+      {score}{sit}{summ}{qt}{flags_html(g, p, flags)}
+    </div>"""
+
+
+def flags_html(g, p, flags):
     fl_html = ""
     for _, f in flags.iterrows():
         r = lv.grade_bet(f, g, game_model=p)
@@ -291,75 +299,8 @@ def live_card(g, p, flags):
         fl_html += (f"<div class='flag-row'><span><span class='badge {'hit' if f['tier'] == 'BET' else 'final'}'>"
                     f"{f['tier']}</span> <b>{f['bet']}: {side}{line}</b> <span class='card-sub'>{f['note']}</span>"
                     f"</span><span>{txt}{mtxt} <span class='badge {cls}'>{lab}</span></span></div>")
-    return f"""
-    <div class='card'>
-      <div class='card-head'><div class='card-title'>{a} @ {h}</div><div class='card-sub'>{sub}</div></div>
-      {score}{sit}{summ}{qt}{fl_html}
-    </div>"""
+    return fl_html
 
-
-with tab_live:
-    c1, c2, c3 = st.columns([1.3, 1, 1])
-    show = c1.radio("Show", ["Live now", "Today", "Whole week"], index=1, horizontal=True, key="live_show")
-    only_flags = c2.toggle("Flagged games only", key="live_flags_only")
-    auto = c3.toggle("Auto-refresh (60s)", value=True, key="live_auto")
-    FLAGS = BETS[BETS.market.isin(["spread", "total"])]
-
-    @st.fragment(run_every=60 if auto else None)
-    def live_board():
-        try:
-            games = live_scoreboard()
-        except Exception as exc:  # noqa: BLE001
-            st.error(f"Could not reach the ESPN scoreboard: {exc}")
-            return
-        if not games:
-            st.info("ESPN has no games on the scoreboard right now.")
-            return
-        now = pd.Timestamp.now(tz=EST)
-        if show == "Live now":
-            games = [g for g in games if g["state"] == "in"]
-        elif show == "Today":
-            games = [g for g in games if pd.notna(g["kick_utc"]) and g["kick_utc"].tz_convert(EST).date() == now.date()]
-        wk = FLAGS[FLAGS.season == SEASON]
-        names = {g["game"] for g in live_scoreboard()}
-        wk = wk[wk.game.isin(names)]  # this ESPN week's flags only
-        if only_flags:
-            games = [g for g in games if g["game"] in set(wk.game)]
-        # flag tally across the whole week (bets + leans; watch shown separately)
-        allg = {g["game"]: g for g in live_scoreboard()}
-        tally = {}
-        for _, f in wk.iterrows():
-            g = allg.get(f["game"])
-            stt = lv.grade_bet(f, g, game_model=live_model(g)[0] if g else None)["status"]
-            grp = "watch" if f["tier"] == "WATCH" else "play"
-            tally.setdefault(grp, {}).setdefault(stt, 0)
-            tally[grp][stt] += 1
-
-        def tally_txt(d):
-            order = ["won", "lost", "push", "winning", "losing", "pending"]
-            return " · ".join(f"{d[k]} {k}" for k in order if d.get(k)) or "none"
-
-        st_html(f"<div class='meta'>Updated {now.strftime('%-I:%M:%S %p ET')} from ESPN · "
-                f"<b>Bets & leans:</b> {tally_txt(tally.get('play', {}))} · "
-                f"<b>Watch:</b> {tally_txt(tally.get('watch', {}))}</div>")
-        if not games:
-            st.info({"Live now": "No games in progress right now.",
-                     "Today": "No games today. Switch to Whole week."}.get(show, "No games match."))
-            return
-        order = {"in": 0, "pre": 1, "post": 2}
-        games = sorted(games, key=lambda g: (order.get(g["state"], 3), g["kick_utc"]))
-        for g in games:
-            p, _ = live_model(g)
-            f = wk[wk.game == g["game"]].sort_values("tier_rank")
-            st_html(live_card(g, p, f))
-
-    live_board()
-    st_html("<div class='meta'>Flags come from <code>bets.csv</code> (v3: BET = injury gap ATS and 15+ mph wind "
-            "under; LEAN = Sunday/Monday night under; WATCH = model total 7+ pts off and tiebreakers, not bets). "
-            "Lines are the ones logged when each flag fired. Model numbers are the pre-game game flow projection; "
-            "'On pace' adds the model's scoring rate for the time left to the current total, and live totals flags "
-            "are graded on that pace (an under only counts as lost once the line is passed). Quarter cells read "
-            "actual / model.</div>")
 
 @st.cache_data(ttl=30, show_spinner=False)
 def week_board_live(season, week):
@@ -518,51 +459,120 @@ with tab_bets:
                 "are graded on pace, and an over counts as won (an under as lost) once the line is passed. "
                 "Records are graded at -110.</div>")
 
-with tab_slate:
+with tab_games:
     weeks = sorted(GAMES.week.unique())
     unplayed = GAMES[GAMES.result.isna()]
     default_week = int(unplayed.week.min()) if len(unplayed) else int(max(weeks))
-    week = st.selectbox("Week", weeks, index=weeks.index(default_week), key="slate_week")
-    wk = GAMES[GAMES.week == week].sort_values(["gameday", "gametime"])
-    expand = st.toggle("Expand all games", key="slate_expand")
-    for _, g in wk.iterrows():
-        try:
-            played = pd.notna(g.result)
-            p = predict_played(g.game_id) if played else None
-            if p is None:
-                p = predict_upcoming(g.home_team, g.away_team, g.roof in ("dome", "closed"))
-            actual = None
-            if played:
-                m = MATCH[MATCH.game_id == g.game_id]
-                actual = {"result": g.result, "home_score": g.home_score, "away_score": g.away_score,
-                          "total": g.total, "half_margin": float(m.half_margin.iloc[0]) if len(m) else 0}
-            fav = g.home_team if p["home_win"] >= .5 else g.away_team
-            label = (f"**{g.away_team} @ {g.home_team}** · {p['away_score']:.1f}–{p['home_score']:.1f}"
-                     f" · {fav} {pct(max(p['home_win'], 1 - p['home_win']))} · Tot {p['total']:.1f}"
-                     + (" · FINAL" if played else ""))
-            with st.expander(label, expanded=expand):
-                st_html(game_card(g, p, actual))
-        except Exception as exc:  # noqa: BLE001
-            st.error(f"{g.away_team} @ {g.home_team}: could not predict ({exc})")
+    c1, c2, c3 = st.columns([1, 1.6, 1])
+    gweek = c1.selectbox("Week", weeks, index=weeks.index(default_week), key="games_week")
+    gshow = c2.radio("Show", ["All", "Live now", "Flagged"], horizontal=True, key="games_show")
+    gauto = c3.toggle("Auto-refresh (60s)", value=True, key="games_auto")
+    st_html("<div class='meta'>Each game shows the model preview until kickoff, then switches to the live score, "
+            "with the model's quarter-by-quarter projection beside the actual and the week's bets graded live.</div>")
 
-with tab_match:
-    teams = sorted(RATINGS.index)
-    c1, c2 = st.columns(2)
-    away = c1.selectbox("Away", teams, index=teams.index("MIA") if "MIA" in teams else 0)
-    home = c2.selectbox("Home", teams, index=teams.index("BUF") if "BUF" in teams else 1)
-    indoor = st.toggle("Indoor (dome or closed roof)", value=False)
-    st_html("<div class='meta'>Injuries: starters out this week, weighted by snap share and position "
-            f"(league average is about {INJ_DEFAULT[0]:.1f} on offense and {INJ_DEFAULT[1]:.1f} on defense).</div>")
-    c3, c4, c5, c6 = st.columns(4)
-    ai_o = c3.number_input(f"{away} off", 0.0, 10.0, round(INJ_DEFAULT[0], 1), 0.5)
-    ai_d = c4.number_input(f"{away} def", 0.0, 10.0, round(INJ_DEFAULT[1], 1), 0.5)
-    hi_o = c5.number_input(f"{home} off", 0.0, 10.0, round(INJ_DEFAULT[0], 1), 0.5)
-    hi_d = c6.number_input(f"{home} def", 0.0, 10.0, round(INJ_DEFAULT[1], 1), 0.5)
-    if home == away:
-        st.warning("Pick two different teams.")
-    else:
-        p = predict_upcoming(home, away, indoor, {away: (ai_o, ai_d), home: (hi_o, hi_d)})
-        st_html(game_card({"away_team": away, "home_team": home}, p))
+    @st.fragment(run_every=60 if gauto else None)
+    def games_board():
+        wk = GAMES[GAMES.week == gweek].sort_values(["gameday", "gametime"])
+        try:
+            espn = week_games(SEASON, int(gweek))
+        except Exception as exc:  # noqa: BLE001
+            espn = {}
+            st.warning(f"Live scores unavailable (ESPN: {exc}). Showing model previews.")
+        flags = BETS[(BETS.season == SEASON) & (BETS.week == gweek) & BETS.market.isin(["spread", "total"])]
+        props = BETS[(BETS.season == SEASON) & (BETS.week == gweek) & ~BETS.market.isin(["spread", "total"])]
+        now = pd.Timestamp.now(tz=EST)
+        n_live = sum(1 for g in espn.values() if g["state"] == "in")
+        st_html(f"<div class='meta'>Updated {now.strftime('%-I:%M:%S %p ET')} · {n_live} live</div>")
+        items = []
+        for _, g in wk.iterrows():
+            key = f"{g.away_team}@{g.home_team}"
+            e = espn.get(key)
+            state = e["state"] if e else ("post" if pd.notna(g.result) else "pre")
+            if gshow == "Live now" and state != "in":
+                continue
+            if gshow == "Flagged" and key not in set(flags.game):
+                continue
+            items.append((g, e, state, key))
+        if not items:
+            st.info("No games match.")
+            return
+        order = {"in": 0, "pre": 1, "post": 2}
+        items.sort(key=lambda t: (order[t[2]], str(t[0].gameday), str(t[0].gametime)))
+        for g, e, state, key in items:
+            f = flags[flags.game == key].sort_values("tier_rank")
+            n_props = int((props.game == key).sum())
+            more = f"<div class='meta'>{n_props} prop pick{'s' if n_props != 1 else ''} for this game on the Bets tab</div>" if n_props else ""
+            try:
+                if state == "in" and e is not None:
+                    p, _ = live_model(e)
+                    st_html(live_card(e, p, f) + more)
+                    continue
+                played = pd.notna(g.result)
+                p = predict_played(g.game_id) if played else None
+                if p is None:
+                    p = predict_upcoming(g.home_team, g.away_team, g.roof in ("dome", "closed"))
+                fav = g.home_team if p["home_win"] >= .5 else g.away_team
+                if state == "post":
+                    if e is not None:
+                        a_s, h_s = e["away_score"], e["home_score"]
+                    else:
+                        a_s, h_s = g.away_score, g.home_score
+                    label = (f"**{g.away_team} {a_s:.0f} @ {g.home_team} {h_s:.0f}** · FINAL · model "
+                             f"{p['away_score']:.1f}–{p['home_score']:.1f}")
+                else:
+                    kick = f"{g.weekday} {g.gametime} ET" if isinstance(g.gametime, str) else ""
+                    label = (f"**{g.away_team} @ {g.home_team}** · {kick} · {p['away_score']:.1f}–{p['home_score']:.1f}"
+                             f" · {fav} {pct(max(p['home_win'], 1 - p['home_win']))} · Tot {p['total']:.1f}")
+                if len(f):
+                    label += f" · {len(f)} flag{'s' if len(f) != 1 else ''}"
+                with st.expander(label, expanded=False):
+                    if state == "post" and e is not None:
+                        st_html(live_card(e, p, f) + more)
+                        continue
+                    actual = None
+                    if played:
+                        m = MATCH[MATCH.game_id == g.game_id]
+                        actual = {"result": g.result, "home_score": g.home_score, "away_score": g.away_score,
+                                  "total": g.total, "half_margin": float(m.half_margin.iloc[0]) if len(m) else 0}
+                    if state == "pre" and st.toggle("Adjust injuries", key=f"inj_{g.game_id}"):
+                        st_html("<div class='meta'>Starters out, weighted by snap share and position (league "
+                                f"average about {INJ_DEFAULT[0]:.1f} offense, {INJ_DEFAULT[1]:.1f} defense).</div>")
+                        c = st.columns(4)
+                        ao = c[0].number_input(f"{g.away_team} off", 0.0, 10.0, round(INJ_DEFAULT[0], 1), 0.5, key=f"ao_{g.game_id}")
+                        ad = c[1].number_input(f"{g.away_team} def", 0.0, 10.0, round(INJ_DEFAULT[1], 1), 0.5, key=f"ad_{g.game_id}")
+                        ho = c[2].number_input(f"{g.home_team} off", 0.0, 10.0, round(INJ_DEFAULT[0], 1), 0.5, key=f"ho_{g.game_id}")
+                        hd = c[3].number_input(f"{g.home_team} def", 0.0, 10.0, round(INJ_DEFAULT[1], 1), 0.5, key=f"hd_{g.game_id}")
+                        p = predict_upcoming(g.home_team, g.away_team, g.roof in ("dome", "closed"),
+                                             {g.away_team: (ao, ad), g.home_team: (ho, hd)})
+                    card = game_card(g, p, actual)
+                    fh = flags_html(e, p, f) if len(f) else ""
+                    st_html(card.rstrip()[:-len("</div>")] + fh + "</div>" if fh else card)
+                    if more:
+                        st_html(more)
+            except Exception as exc:  # noqa: BLE001
+                st.error(f"{g.away_team} @ {g.home_team}: could not load ({exc})")
+
+    games_board()
+
+    with st.expander("Any matchup (pick two teams)"):
+        teams = sorted(RATINGS.index)
+        c1, c2 = st.columns(2)
+        away = c1.selectbox("Away", teams, index=teams.index("MIA") if "MIA" in teams else 0)
+        home = c2.selectbox("Home", teams, index=teams.index("BUF") if "BUF" in teams else 1)
+        indoor = st.toggle("Indoor (dome or closed roof)", value=False)
+        c3, c4, c5, c6 = st.columns(4)
+        ai_o = c3.number_input(f"{away} off inj", 0.0, 10.0, round(INJ_DEFAULT[0], 1), 0.5)
+        ai_d = c4.number_input(f"{away} def inj", 0.0, 10.0, round(INJ_DEFAULT[1], 1), 0.5)
+        hi_o = c5.number_input(f"{home} off inj", 0.0, 10.0, round(INJ_DEFAULT[0], 1), 0.5)
+        hi_d = c6.number_input(f"{home} def inj", 0.0, 10.0, round(INJ_DEFAULT[1], 1), 0.5)
+        if home == away:
+            st.warning("Pick two different teams.")
+        else:
+            p = predict_upcoming(home, away, indoor, {away: (ai_o, ai_d), home: (hi_o, hi_d)})
+            st_html(game_card({"away_team": away, "home_team": home}, p))
+    st_html("<div class='meta'>Flags come from <code>bets.csv</code> (BET = injury gap ATS and 15+ mph wind under; "
+            "LEAN = Sunday/Monday night under; WATCH = not a bet). 'On pace' adds the model's scoring rate for the time "
+            "left to the current score; live flags are graded on it. Quarter cells read actual / model.</div>")
 
 with tab_players:
     from math import erf, sqrt
