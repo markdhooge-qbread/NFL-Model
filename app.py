@@ -74,6 +74,9 @@ st_html(
               padding:4px 2px 6px 2px;}
       .score .tm {display:flex;align-items:center;gap:6px;}
       .poss {font-size:12px;color:#fbbf24;}
+      .bet-row {padding:7px 8px;border-bottom:1px solid #334155;font-size:13px;}
+      .bet-top {display:flex;justify-content:space-between;align-items:center;gap:6px;}
+      .bet-stats {font-size:12px;color:#cbd5e1;margin:3px 0 1px 0;}
       .flag-row {display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;font-size:12px;
                  padding:5px 0;border-top:1px solid #334155;color:#cbd5e1;}
     </style>
@@ -328,6 +331,34 @@ def week_games(season, week):
     return {g["game"]: g for g in games}
 
 
+GRADE_RANK = {"Best": 0, "Good": 1, "Pass": 2}
+STATUS_LOOK = {"won": ("hit", "HIT"), "lost": ("miss", "MISSED"), "winning": ("hit", "ON PACE"),
+               "losing": ("miss", "BEHIND"), "pending": ("pend", "NOT STARTED"), "push": ("push", "PUSH"),
+               "void": ("pend", "VOID")}
+
+
+def bet_grade(tier, is_prop, edge, line):
+    """Best / Good / Pass from what held up in testing, not just the size of the gap.
+
+    Best: v3 bets (injury gap ATS ~56% over 2015-26, 15+ mph wind unders). Good: v3 leans (primetime unders) and
+    props the props model still likes by its own flag rule (10%+ and 8+ yds past the line). Pass: watch-only
+    flags, tiebreakers, and props whose edge shrank once a real line went in. Props top out at Good because they
+    have not been tested against real DK lines.
+    """
+    if tier == "BET":
+        return "Best"
+    if tier == "LEAN":
+        return "Good"
+    if is_prop and edge is not None and line and edge >= 8 and edge / abs(line) >= 0.10:
+        return "Good"
+    return "Pass"
+
+
+def team_model(game_key, g=None):
+    away, home = game_key.split("@")
+    return live_model(g if g is not None else {"home": home, "away": away})[0]
+
+
 def grade_week(season, week):
     rows = []
     bets = BETS[(BETS.season == season) & (BETS.week == week)]
@@ -337,61 +368,109 @@ def grade_week(season, week):
         games = week_games(season, week)
     except Exception as exc:  # noqa: BLE001
         st.warning(f"Week {week}: could not reach ESPN ({exc})")
-        return pd.DataFrame()
+        games = {}
     for _, b in bets.iterrows():
         g = games.get(b["game"])
-        box, gm = None, None
-        if g is not None and g["state"] != "pre":
-            if b["market"] in ("spread", "total"):
-                gm = live_model(g)[0]
-            else:
-                try:
-                    box = box_done(g["espn_id"]) if g["state"] == "post" else box_live(g["espn_id"])
-                except Exception:  # noqa: BLE001
-                    box = None
-        r = lv.grade_bet(b, g, box, gm)
         is_prop = b["market"] not in ("spread", "total")
+        box, gm = None, None
+        if not is_prop:
+            gm = team_model(b["game"], g)
+        elif g is not None and g["state"] != "pre":
+            try:
+                box = box_done(g["espn_id"]) if g["state"] == "post" else box_live(g["espn_id"])
+            except Exception:  # noqa: BLE001
+                box = None
+        r = lv.grade_bet(b, g, box, gm)
+        side, line = str(b["side"]), float(b["line"])
+        proj, proj_txt, edge = None, "–", None
+        if b["market"] == "spread" and gm is not None:
+            away, home = b["game"].split("@")
+            proj = gm["result"] * (1 if side == home else -1)
+            proj_txt = f"{side} {'by' if proj >= 0 else 'lose by'} {abs(proj):.1f}"
+            edge = proj + line
+        elif b["market"] == "total" and gm is not None:
+            proj = gm["total"]
+            proj_txt = f"{proj:.1f}"
+            edge = (proj - line) if side.lower() == "over" else (line - proj)
+        elif is_prop and pd.notna(b["model"]):
+            proj = float(b["model"])
+            proj_txt = f"{proj:.1f}"
+            edge = (proj - line) if side.lower() == "over" else (line - proj)
+        grade = bet_grade(b["tier"], is_prop, edge, line)
         if is_prop:
-            what = f"{b['player']} {str(b['side']).upper()} {b['line']:g}"
+            what = f"{b['player']} {side.capitalize()}"
+            sub = f"{b['bet']} · {b['game'].replace('@', ' @ ')}"
+            line_txt = f"{line:g}"
+            edge_txt = "–" if edge is None else f"{edge:+.1f} ({edge / abs(line):+.0%})" if line else f"{edge:+.1f}"
+            norm = 0 if edge is None or not line else edge / abs(line) / 0.25
         elif b["market"] == "total":
-            what = f"{b['game'].replace('@', ' @ ')} {str(b['side']).upper()} {b['line']:g}"
+            what = f"{b['game'].replace('@', ' @ ')} {side.capitalize()}"
+            sub = b["bet"]
+            line_txt = f"{line:g}"
+            edge_txt = "–" if edge is None else f"{edge:+.1f}"
+            norm = 0 if edge is None else edge / 7
         else:
-            what = f"{b['side']} {b['line']:+g}"
-        rows.append({"week": week, "tier": b["tier"], "type": f"{b['tier']} · {b['bet']}", "bet": what,
-                     "game": b["game"], "state": g["state"] if g else "pre", "detail": g["detail"] if g else "",
-                     "kick": g["kick_utc"] if g else pd.NaT, "line": b["line"], "now": r["now"], "pace": r["pace"],
-                     "margin": r["margin"], "status": r["status"], "text": r["text"], "note": b["note"]})
+            what = f"{side} {line:+g}"
+            sub = f"{b['bet']} · {b['game'].replace('@', ' @ ')}"
+            line_txt = f"{line:+g}"
+            edge_txt = "–" if edge is None else f"{edge:+.1f}"
+            norm = 0 if edge is None else edge / 7
+        kick = g["kick_utc"] if g else pd.NaT
+        rows.append({"week": week, "tier": b["tier"], "grade": grade, "kind": "Prop" if is_prop else "Game",
+                     "type": b["bet"], "bet": what, "sub": sub, "game": b["game"],
+                     "state": g["state"] if g else "pre", "detail": g["detail"] if g else "",
+                     "kick": kick, "kick_day": kick.tz_convert(EST).date() if pd.notna(kick) else None,
+                     "line": line, "line_txt": line_txt, "proj": proj, "proj_txt": proj_txt, "edge": edge,
+                     "edge_txt": edge_txt, "norm": norm, "now": r["now"], "pace": r["pace"], "margin": r["margin"],
+                     "status": r["status"], "note": b["note"]})
     return pd.DataFrame(rows)
 
 
-def bets_table(df):
-    body = ""
+def units(d):
+    w, l = int((d.status == "won").sum()), int((d.status == "lost").sum())
+    return w, l, w * 100 / 110 - l
+
+
+def board_html(df):
+    fmt = lambda v: "–" if v is None or pd.isna(v) else f"{v:.0f}" if abs(v - round(v)) < 0.05 else f"{v:.1f}"
+    rows = ""
     for r in df.itertuples():
-        cls, lab = BADGE[r.status]
-        tier_cls = "hit" if r.tier == "BET" else "final"
-        fmt = lambda v: "–" if v is None or pd.isna(v) else f"{v:.1f}" if abs(v - round(v)) > 0.05 else f"{v:.0f}"
+        cls, lab = STATUS_LOOK[r.status]
+        color = {"hit": "#22c55e", "miss": "#ef4444"}.get(cls, "#475569")
+        gcls = {"Best": "hit", "Good": "push", "Pass": "pend"}[r.grade]
         live = "<span class='livedot'></span>" if r.state == "in" else ""
-        body += (f"<tr><td><span class='badge {tier_cls}'>{r.tier}</span> <b>{r.bet}</b>"
-                 f"<div class='card-sub'>{r.type.split(' · ', 1)[1]} · {r.game.replace('@', ' @ ')} · {live}{r.detail}</div></td>"
-                 f"<td>{fmt(r.now)}</td><td>{fmt(r.pace)}</td>"
-                 f"<td>{'–' if r.margin is None or pd.isna(r.margin) else f'{r.margin:+.1f}'}</td>"
-                 f"<td><span class='badge {cls}'>{lab}</span></td></tr>")
-    return (f"<div class='card'><div class='tbl-wrap'><table class='tbl'><tr><th>Bet</th><th>Now</th><th>Pace</th>"
-            f"<th>vs line</th><th>Status</th></tr>{body}</table></div></div>")
+        when = r.detail if r.state != "pre" else (r.kick.tz_convert(EST).strftime("%a %-I:%M %p")
+                                                   if pd.notna(r.kick) else "")
+        ecol = "#86efac" if (r.edge or 0) > 0 else "#fca5a5" if (r.edge or 0) < 0 else "#cbd5e1"
+        stats = [f"Line <b>{r.line_txt}</b>", f"Proj <b>{r.proj_txt}</b>",
+                 f"Edge <b style='color:{ecol}'>{r.edge_txt}</b>"]
+        if r.state == "in":
+            stats.append(f"Now <b>{fmt(r.now)}</b> · Pace <b>{fmt(r.pace)}</b>")
+        elif r.state == "post" and r.now is not None and not pd.isna(r.now):
+            stats.append(f"Final <b>{fmt(r.now)}</b>")
+        rows += (f"<div class='bet-row' style='border-left:4px solid {color}'>"
+                 f"<div class='bet-top'><span><span class='badge {gcls}'>{r.grade.upper()}</span> <b>{r.bet}</b></span>"
+                 f"<span class='badge {cls}'>{lab}</span></div>"
+                 f"<div class='bet-stats'>{' · '.join(stats)}</div>"
+                 f"<div class='card-sub'>{r.sub}{' · ' + live + when if when else ''}</div></div>")
+    return f"<div class='card' style='padding:4px'>{rows}</div>"
 
 
 def record_table(df):
-    done = df[df.status.isin(["won", "lost", "push"])]
+    done = df[df.status.isin(["won", "lost", "push"])].copy()
     if done.empty:
         return None
-    g = done.groupby("type").status.value_counts().unstack(fill_value=0)
+    done["bet type"] = done.grade + " · " + done.type
+    g = done.groupby("bet type").status.value_counts().unstack(fill_value=0)
     for c in ("won", "lost", "push"):
         if c not in g:
             g[c] = 0
     g["record"] = g.won.astype(str) + "–" + g.lost.astype(str) + g.push.map(lambda x: f"–{x}" if x else "")
     g["win %"] = (g.won / (g.won + g.lost).replace(0, np.nan) * 100).round(0)
     g["units (-110)"] = (g.won * 100 / 110 - g.lost).round(2)
-    return g[["record", "win %", "units (-110)"]].reset_index().sort_values("type")
+    out = g[["record", "win %", "units (-110)"]].reset_index()
+    out["_r"] = out["bet type"].str.split(" · ").str[0].map(GRADE_RANK)
+    return out.sort_values(["_r", "bet type"]).drop(columns="_r")
 
 
 with tab_bets:
@@ -405,11 +484,14 @@ with tab_bets:
             cur_week = max((w for w in bet_weeks if w <= (cur[0]["week"] if cur else cur_week)), default=cur_week)
         except Exception:  # noqa: BLE001
             pass
-        c1, c2, c3 = st.columns([1, 1.6, 1])
+        c1, c2, c3 = st.columns([1, 1.4, 1.2])
         bweek = c1.selectbox("Week", bet_weeks, index=bet_weeks.index(cur_week), key="bets_week")
-        tiers = c2.multiselect("Show", ["BET", "LEAN", "WATCH", "PROP"], default=["BET", "LEAN", "PROP"],
-                               key="bets_tiers")
-        bauto = c3.toggle("Auto-refresh (60s)", value=True, key="bets_auto")
+        kind = c2.radio("Type", ["All", "Game", "Props"], horizontal=True, key="bets_kind")
+        grades = c3.multiselect("Grade", ["Best", "Good", "Pass"], default=["Best", "Good"], key="bets_grades")
+        wk_games = BETS[(BETS.season == SEASON) & (BETS.week == bweek)].game.unique().tolist()
+        c4, c5 = st.columns([2, 1])
+        game_pick = c4.selectbox("Game", ["All games"] + [x.replace("@", " @ ") for x in wk_games], key="bets_game")
+        bauto = c5.toggle("Auto-refresh (60s)", value=True, key="bets_auto")
 
         @st.fragment(run_every=60 if bauto else None)
         def bets_board():
@@ -417,46 +499,59 @@ with tab_bets:
             if df.empty:
                 st.info("No bets for this week.")
                 return
-            df = df[df.tier.isin(tiers)]
+            df = df[df.grade.isin(grades)]
+            if kind != "All":
+                df = df[df.kind == ("Game" if kind == "Game" else "Prop")]
+            if game_pick != "All games":
+                df = df[df.game == game_pick.replace(" @ ", "@")]
+            if df.empty:
+                st.info("No bets match these filters.")
+                return
             now = pd.Timestamp.now(tz=EST)
-            n = df.status.value_counts()
-            st_html(f"<div class='meta'>Updated {now.strftime('%-I:%M:%S %p ET')} · "
-                    + " · ".join(f"<b>{n.get(k, 0)}</b> {k}" for k in
-                                 ["winning", "losing", "won", "lost", "push", "pending", "void"] if n.get(k, 0))
-                    + "</div>")
-            live = df[df.state == "in"].assign(k=lambda d: d.margin.abs()).sort_values("k")
-            pre = df[df.state == "pre"].sort_values("kick")
-            done = df[df.state == "post"].sort_values(["status", "margin"])
-            for title, part in [("In progress · closest to the line first", live), ("Upcoming", pre),
-                                ("Settled", done)]:
-                if len(part):
-                    st_html(f"<div class='section'>{title} ({len(part)})</div>")
-                    st_html(bets_table(part))
+            w, l, u = units(df)
+            td = df[df.kick_day == now.date()]
+            tw, tl, tu = units(td)
+            on, behind = int((df.status == "winning").sum()), int((df.status == "losing").sum())
+            todo = int((df.status == "pending").sum())
+            parts = [f"Week {bweek} <b>{w}–{l}</b>, <b>{u:+.1f}u</b>"]
+            if len(td):
+                parts.append(f"Today <b>{tw}–{tl}</b>, <b>{tu:+.1f}u</b>")
+            if on or behind:
+                parts.append(f"Live <b style='color:#86efac'>{on} on pace</b>, <b style='color:#fca5a5'>{behind} behind</b>")
+            if todo:
+                parts.append(f"{todo} to play")
+            st_html(f"<div style='background:#1e293b;padding:8px 10px;border-radius:6px;font-size:14px;color:#f8fafc;"
+                    f"margin-bottom:6px'>{' · '.join(parts)}</div>"
+                    f"<div class='meta'>Updated {now.strftime('%-I:%M:%S %p ET')} · ranked best bet first</div>")
+            df = df.assign(_g=df.grade.map(GRADE_RANK)).sort_values(["_g", "norm"], ascending=[True, False])
+            st_html(board_html(df))
 
         bets_board()
 
-        st_html("<div class='section'>Record by bet type</div>")
-        allw = pd.concat([grade_week(SEASON, w) for w in bet_weeks], ignore_index=True)
-        rec = record_table(allw) if len(allw) else None
-        if rec is None:
-            st.info("No settled bets yet.")
-        else:
-            st.dataframe(rec, width="stretch", hide_index=True)
-            wk_rec = []
-            for w, d in allw.groupby("week"):
-                d = d[d.status.isin(["won", "lost", "push"]) & (d.tier != "WATCH")]
-                if len(d):
-                    wk_rec.append({"week": w, "won": int((d.status == "won").sum()),
-                                   "lost": int((d.status == "lost").sum()), "push": int((d.status == "push").sum())})
-            if wk_rec:
-                st_html("<div class='meta'>By week (bets, leans and props; watch excluded)</div>")
-                st.dataframe(pd.DataFrame(wk_rec), width="stretch", hide_index=True)
-        st_html("<div class='meta'>Bets come from <code>bets.csv</code> in the repo: v3 team flags (BET = injury gap "
-                "ATS and 15+ mph wind under, LEAN = Sunday/Monday night under, WATCH = not a bet) and player props "
-                "flagged by the props model. Prop lines are the player's season average until you enter the DK line "
-                "in the file. <b>Pace</b> = current number plus the model's projection for the time left; live bets "
-                "are graded on pace, and an over counts as won (an under as lost) once the line is passed. "
-                "Records are graded at -110.</div>")
+        with st.expander("Record by bet type (all weeks)"):
+            allw = pd.concat([grade_week(SEASON, w) for w in bet_weeks], ignore_index=True)
+            rec = record_table(allw) if len(allw) else None
+            if rec is None:
+                st.info("No settled bets yet.")
+            else:
+                st.dataframe(rec, width="stretch", hide_index=True)
+                wk_rec = []
+                for w_, d in allw[allw.grade != "Pass"].groupby("week"):
+                    ww, ll, uu = units(d)
+                    if ww + ll:
+                        wk_rec.append({"week": w_, "record": f"{ww}–{ll}", "units (-110)": round(uu, 2)})
+                if wk_rec:
+                    st_html("<div class='meta'>By week, Best and Good only</div>")
+                    st.dataframe(pd.DataFrame(wk_rec), width="stretch", hide_index=True)
+        st_html("<div class='meta'><b>Grade</b> reflects what held up in testing, not just the gap: "
+                "<b>Best</b> = v3 bets (injury gap ATS, 15+ mph wind under). <b>Good</b> = v3 leans (Sunday/Monday "
+                "night unders) and props the props model still likes by 10%+ and 8+ yds. <b>Pass</b> = watch-only "
+                "flags, tiebreakers and thin props. Props top out at Good until they're tested against real DK "
+                "lines. <b>Proj</b> = game flow model (games) or props model (players). <b>Edge</b> = projection "
+                "minus the line in your bet's favor. <b>Now / pace</b> = current number / current plus the "
+                "model's projection for the time left. Green = hit or on pace, red = missed or behind, gray = not "
+                "started. Units at -110, 1 unit per bet. Prop lines are the season average until a DK line is "
+                "entered in <code>bets.csv</code>.</div>")
 
 with tab_games:
     weeks = sorted(GAMES.week.unique())
