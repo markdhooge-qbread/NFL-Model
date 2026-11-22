@@ -6,7 +6,7 @@ and the chance the home team scores first, leads at half, scores last before hal
 Weights come from model.json (built offline by train.py). On start the app downloads this season's and last
 season's nflverse play-by-play to compute current team ratings.
 
-Tabs: Live, Slate, Matchup, Players, Teams, Flow Chart, Record.
+Tabs: Bets, Games, Players, Model (Teams, Flow Chart, Record).
 """
 import datetime
 import json
@@ -209,8 +209,7 @@ st_html(f"<div class='section'>🏈 NFL Game Flow Model · {SEASON} season</div>
         f"{SEASON - 1} early in the year. Model trained on {MODEL['seasons'][0]}–{MODEL['seasons'][1]} "
         f"({MODEL['games']:,} games).</div>")
 
-tab_bets, tab_games, tab_players, tab_teams, tab_flow, tab_rec = st.tabs(
-    ["Bets", "Games", "Players", "Teams", "Flow Chart", "Record"])
+tab_bets, tab_games, tab_players, tab_model = st.tabs(["Bets", "Games", "Players", "Model"])
 BETS = lv.load_bets(HERE / "bets.csv")
 
 
@@ -712,87 +711,94 @@ with tab_players:
                     f"<div class='meta'>Rough odds from the model's typical miss ({m['sd']:.0f} on yards in testing). "
                     "Not tested against real DraftKings lines, so treat it as a lean, not an edge.</div></div>")
 
-with tab_teams:
-    show = {"o_third_conv": "3rd% off", "d_third_conv": "3rd% def", "o_third_ytg": "3rd ytg off",
-            "d_third_ytg": "3rd ytg def", "o_rz_trips": "RZ trips", "d_rz_trips": "RZ allowed",
-            "o_rz_td_pct": "RZ TD% off", "d_rz_td_pct": "RZ TD% def", "mid8_f": "Mid8 for", "mid8_a": "Mid8 ag",
-            "double_dip": "Double dip", "o_penalties": "Pen", "o_pen_yds": "Pen yds", "o_pace": "Pace",
-            "o_plays": "Off plays", "d_plays": "Def plays", "o_pts_drive": "Pts/drive", "d_pts_drive": "Pts/drive ag",
-            "o_epa_adj": "Adj EPA off", "d_epa_adj": "Adj EPA def", "o_early_sr": "Early SR", "o_sack_rate": "Sack% off",
-            "o_explosive": "Explosive", "o_three_out": "3&out", "first_score": "Scores 1st"}
-    prof = TEAMG.groupby("team")[list(show)].mean().rename(columns=show)
-    prof.insert(0, "GP", TEAMG.groupby("team").size())
-    prof["Total plays"] = prof["Off plays"] + prof["Def plays"]
-    pct_cols = ["3rd% off", "3rd% def", "RZ TD% off", "RZ TD% def", "Double dip", "Early SR", "Sack% off",
-                "Explosive", "3&out", "Scores 1st"]
-    fmt = {c: "{:.0%}" for c in pct_cols}
-    fmt.update({c: "{:.2f}" for c in ["Adj EPA off", "Adj EPA def", "Pts/drive", "Pts/drive ag"]})
-    fmt.update({c: "{:.1f}" for c in prof.columns if c not in fmt and c != "GP"})
-    st_html("<div class='meta'>Season averages per game. Pace = seconds per snap in neutral situations. "
-            "Adj EPA = EPA per play after removing score-state effects (defense: lower is better).</div>")
-    st.dataframe(prof.sort_values("Adj EPA off", ascending=False).style.format(fmt), width="stretch",
-                 height=600)
+with tab_model:
+    model_sec = st.radio("Section", ["Teams", "Flow Chart", "Record"], horizontal=True, key="model_sec",
+                         label_visibility="collapsed")
+    st_html("<div class='meta'>Teams: the season stats the model runs on. Flow Chart: which team actually "
+            "played better in any finished game. Record: how the game model has done on games it never "
+            "trained on.</div>")
 
-with tab_flow:
-    done = GAMES[GAMES.result.notna()].sort_values(["week", "gameday"], ascending=False)
-    labels = [f"Wk {r.week}: {r.away_team} {r.away_score:.0f} @ {r.home_team} {r.home_score:.0f}" for r in done.itertuples()]
-    if not labels:
-        st.info("No finished games yet this season.")
-    else:
-        sel = st.selectbox("Game", labels, key="flow_game")
-        gid = done.game_id.iloc[labels.index(sel)]
-        x = PLAYS[PLAYS.game_id == gid].sort_values("play_id")
-        h = done.home_team.iloc[labels.index(sel)]
-        df = pd.DataFrame({
-            "minute": (3600 - x.game_seconds_remaining) / 60,
-            "flow": np.where(x.posteam == h, x.epa_adj, -x.epa_adj).cumsum(),
-            "home_wp": np.where(x.posteam == h, x.wp, 1 - x.wp)})
-        share = (df.flow > 0).mean()
-        st_html(f"<div class='meta'>Blue line: cumulative score-adjusted EPA, home minus away (above 0 = {h} "
-                f"controlling play). Orange line: {h} win probability. {h} was ahead on flow for {share:.0%} of plays."
-                "</div>")
-        base = alt.Chart(df).encode(x=alt.X("minute:Q", title="Game minute", scale=alt.Scale(domain=[0, 60])))
-        flow = base.mark_line(color="#38bdf8", strokeWidth=2.5).encode(y=alt.Y("flow:Q", title="Flow (adj EPA)"))
-        wp = base.mark_line(color="#f97316", opacity=.75).encode(
-            y=alt.Y("home_wp:Q", title=f"{h} win prob", scale=alt.Scale(domain=[0, 1]), axis=alt.Axis(format="%")))
-        zero = alt.Chart(pd.DataFrame({"y": [0]})).mark_rule(color="#64748b").encode(y="y:Q")
-        st.altair_chart(alt.layer(flow + zero, wp).resolve_scale(y="independent").properties(height=320),
-                        width="stretch")
+    if model_sec == "Teams":
+        show = {"o_third_conv": "3rd% off", "d_third_conv": "3rd% def", "o_third_ytg": "3rd ytg off",
+                "d_third_ytg": "3rd ytg def", "o_rz_trips": "RZ trips", "d_rz_trips": "RZ allowed",
+                "o_rz_td_pct": "RZ TD% off", "d_rz_td_pct": "RZ TD% def", "mid8_f": "Mid8 for", "mid8_a": "Mid8 ag",
+                "double_dip": "Double dip", "o_penalties": "Pen", "o_pen_yds": "Pen yds", "o_pace": "Pace",
+                "o_plays": "Off plays", "d_plays": "Def plays", "o_pts_drive": "Pts/drive", "d_pts_drive": "Pts/drive ag",
+                "o_epa_adj": "Adj EPA off", "d_epa_adj": "Adj EPA def", "o_early_sr": "Early SR", "o_sack_rate": "Sack% off",
+                "o_explosive": "Explosive", "o_three_out": "3&out", "first_score": "Scores 1st"}
+        prof = TEAMG.groupby("team")[list(show)].mean().rename(columns=show)
+        prof.insert(0, "GP", TEAMG.groupby("team").size())
+        prof["Total plays"] = prof["Off plays"] + prof["Def plays"]
+        pct_cols = ["3rd% off", "3rd% def", "RZ TD% off", "RZ TD% def", "Double dip", "Early SR", "Sack% off",
+                    "Explosive", "3&out", "Scores 1st"]
+        fmt = {c: "{:.0%}" for c in pct_cols}
+        fmt.update({c: "{:.2f}" for c in ["Adj EPA off", "Adj EPA def", "Pts/drive", "Pts/drive ag"]})
+        fmt.update({c: "{:.1f}" for c in prof.columns if c not in fmt and c != "GP"})
+        st_html("<div class='meta'>Season averages per game. Pace = seconds per snap in neutral situations. "
+                "Adj EPA = EPA per play after removing score-state effects (defense: lower is better).</div>")
+        st.dataframe(prof.sort_values("Adj EPA off", ascending=False).style.format(fmt), width="stretch",
+                     height=600)
 
-with tab_rec:
-    rows = []
-    for r in MATCH.itertuples():
-        g = GAMES[GAMES.game_id == r.game_id]
-        if g.empty or pd.isna(g.result.iloc[0]):
-            continue
-        p = predict_played(r.game_id)
-        rows.append({"week": r.week, "game": f"{r.away_team} @ {r.home_team}",
-                     "pred": f"{p['away_score']:.1f}–{p['home_score']:.1f}",
-                     "final": f"{r.away_score:.0f}–{r.home_score:.0f}",
-                     "winner": (p["home_win"] >= .5) == (r.result > 0),
-                     "half_leader": (p["home_leads_half"] >= .5) == (r.half_margin > 0),
-                     "first_score": (p["home_scores_first"] >= .5) == (r.home_scores_first == 1),
-                     "margin_err": abs(p["result"] - r.result), "total_err": abs(p["total"] - r.total),
-                     "plays_err": abs(p["total_plays"] - r.total_plays)})
-    rec = pd.DataFrame(rows)
-    if rec.empty:
-        st.info("No graded games yet.")
-    else:
-        st_html(f"<div class='meta'>{SEASON} games the model never trained on (weeks 2+), using only data from "
-                "before each game.</div>")
-        c = st.columns(3)
-        c[0].metric("Winner", f"{rec.winner.mean():.0%}", f"{rec.winner.sum()}–{(~rec.winner).sum()}")
-        c[1].metric("Halftime leader", f"{rec.half_leader.mean():.0%}")
-        c[2].metric("Scores first", f"{rec.first_score.mean():.0%}")
-        c = st.columns(3)
-        c[0].metric("Margin error", f"{rec.margin_err.mean():.1f} pts")
-        c[1].metric("Total error", f"{rec.total_err.mean():.1f} pts")
-        c[2].metric("Plays error", f"{rec.plays_err.mean():.1f}")
-        st.dataframe(rec.sort_values("week", ascending=False), width="stretch", hide_index=True)
-    with st.expander("How the model was graded (2023+ backtest)"):
-        gr = pd.DataFrame(MODEL["grades"])
-        st.dataframe(gr.round(3), width="stretch", hide_index=True)
-        st_html("<div class='meta'>Fit on seasons before 2023, graded on 2023 onward. gain_vs_avg_pct = how much "
-                "the model beats guessing the league average every game. Quarter, middle-eight and first-score "
-                "predictions are close to coin flips; winner, margin, halftime lead, plays and drives carry real signal."
-                "</div>")
+    if model_sec == "Flow Chart":
+        done = GAMES[GAMES.result.notna()].sort_values(["week", "gameday"], ascending=False)
+        labels = [f"Wk {r.week}: {r.away_team} {r.away_score:.0f} @ {r.home_team} {r.home_score:.0f}" for r in done.itertuples()]
+        if not labels:
+            st.info("No finished games yet this season.")
+        else:
+            sel = st.selectbox("Game", labels, key="flow_game")
+            gid = done.game_id.iloc[labels.index(sel)]
+            x = PLAYS[PLAYS.game_id == gid].sort_values("play_id")
+            h = done.home_team.iloc[labels.index(sel)]
+            df = pd.DataFrame({
+                "minute": (3600 - x.game_seconds_remaining) / 60,
+                "flow": np.where(x.posteam == h, x.epa_adj, -x.epa_adj).cumsum(),
+                "home_wp": np.where(x.posteam == h, x.wp, 1 - x.wp)})
+            share = (df.flow > 0).mean()
+            st_html(f"<div class='meta'>Blue line: cumulative score-adjusted EPA, home minus away (above 0 = {h} "
+                    f"controlling play). Orange line: {h} win probability. {h} was ahead on flow for {share:.0%} of plays."
+                    "</div>")
+            base = alt.Chart(df).encode(x=alt.X("minute:Q", title="Game minute", scale=alt.Scale(domain=[0, 60])))
+            flow = base.mark_line(color="#38bdf8", strokeWidth=2.5).encode(y=alt.Y("flow:Q", title="Flow (adj EPA)"))
+            wp = base.mark_line(color="#f97316", opacity=.75).encode(
+                y=alt.Y("home_wp:Q", title=f"{h} win prob", scale=alt.Scale(domain=[0, 1]), axis=alt.Axis(format="%")))
+            zero = alt.Chart(pd.DataFrame({"y": [0]})).mark_rule(color="#64748b").encode(y="y:Q")
+            st.altair_chart(alt.layer(flow + zero, wp).resolve_scale(y="independent").properties(height=320),
+                            width="stretch")
+
+    if model_sec == "Record":
+        rows = []
+        for r in MATCH.itertuples():
+            g = GAMES[GAMES.game_id == r.game_id]
+            if g.empty or pd.isna(g.result.iloc[0]):
+                continue
+            p = predict_played(r.game_id)
+            rows.append({"week": r.week, "game": f"{r.away_team} @ {r.home_team}",
+                         "pred": f"{p['away_score']:.1f}–{p['home_score']:.1f}",
+                         "final": f"{r.away_score:.0f}–{r.home_score:.0f}",
+                         "winner": (p["home_win"] >= .5) == (r.result > 0),
+                         "half_leader": (p["home_leads_half"] >= .5) == (r.half_margin > 0),
+                         "first_score": (p["home_scores_first"] >= .5) == (r.home_scores_first == 1),
+                         "margin_err": abs(p["result"] - r.result), "total_err": abs(p["total"] - r.total),
+                         "plays_err": abs(p["total_plays"] - r.total_plays)})
+        rec = pd.DataFrame(rows)
+        if rec.empty:
+            st.info("No graded games yet.")
+        else:
+            st_html(f"<div class='meta'>{SEASON} games the model never trained on (weeks 2+), using only data from "
+                    "before each game.</div>")
+            c = st.columns(3)
+            c[0].metric("Winner", f"{rec.winner.mean():.0%}", f"{rec.winner.sum()}–{(~rec.winner).sum()}")
+            c[1].metric("Halftime leader", f"{rec.half_leader.mean():.0%}")
+            c[2].metric("Scores first", f"{rec.first_score.mean():.0%}")
+            c = st.columns(3)
+            c[0].metric("Margin error", f"{rec.margin_err.mean():.1f} pts")
+            c[1].metric("Total error", f"{rec.total_err.mean():.1f} pts")
+            c[2].metric("Plays error", f"{rec.plays_err.mean():.1f}")
+            st.dataframe(rec.sort_values("week", ascending=False), width="stretch", hide_index=True)
+        with st.expander("How the model was graded (2023+ backtest)"):
+            gr = pd.DataFrame(MODEL["grades"])
+            st.dataframe(gr.round(3), width="stretch", hide_index=True)
+            st_html("<div class='meta'>Fit on seasons before 2023, graded on 2023 onward. gain_vs_avg_pct = how much "
+                    "the model beats guessing the league average every game. Quarter, middle-eight and first-score "
+                    "predictions are close to coin flips; winner, margin, halftime lead, plays and drives carry real signal."
+                    "</div>")
