@@ -209,8 +209,9 @@ st_html(f"<div class='section'>🏈 NFL Game Flow Model · {SEASON} season</div>
         f"{SEASON - 1} early in the year. Model trained on {MODEL['seasons'][0]}–{MODEL['seasons'][1]} "
         f"({MODEL['games']:,} games).</div>")
 
-tab_live, tab_slate, tab_match, tab_players, tab_teams, tab_flow, tab_rec = st.tabs(
-    ["Live", "Slate", "Matchup", "Players", "Teams", "Flow Chart", "Record"])
+tab_bets, tab_live, tab_slate, tab_match, tab_players, tab_teams, tab_flow, tab_rec = st.tabs(
+    ["Bets", "Live", "Slate", "Matchup", "Players", "Teams", "Flow Chart", "Record"])
+BETS = lv.load_bets(HERE / "bets.csv")
 
 
 @st.cache_data(ttl=25, show_spinner=False)
@@ -234,7 +235,8 @@ def live_model(g):
 
 
 BADGE = {"winning": ("hit", "WINNING"), "won": ("hit", "WON"), "losing": ("miss", "LOSING"),
-         "lost": ("miss", "LOST"), "push": ("push", "PUSH"), "pending": ("pend", "PENDING")}
+         "lost": ("miss", "LOST"), "push": ("push", "PUSH"), "pending": ("pend", "PENDING"),
+         "void": ("pend", "VOID")}
 
 
 def live_card(g, p, flags):
@@ -280,13 +282,14 @@ def live_card(g, p, flags):
               f"{qrow(a, 'a', g['away_q'])}{qrow(h, 'h', g['home_q'])}</table></div>")
     fl_html = ""
     for _, f in flags.iterrows():
-        stt, m, txt = lv.grade_flag(f, g, pt)
+        r = lv.grade_bet(f, g, game_model=p)
+        stt, m, txt = r["status"], r["margin"], r["text"]
         cls, lab = BADGE[stt]
         side = f["side"].upper() if f["market"] == "total" else f"{f['side']} {f['line']:+g}"
         line = f" {f['line']:g}" if f["market"] == "total" else ""
         mtxt = f" ({m:+.1f})" if m is not None else ""
         fl_html += (f"<div class='flag-row'><span><span class='badge {'hit' if f['tier'] == 'BET' else 'final'}'>"
-                    f"{f['tier']}</span> <b>{f['flag']}: {side}{line}</b> <span class='card-sub'>{f['note']}</span>"
+                    f"{f['tier']}</span> <b>{f['bet']}: {side}{line}</b> <span class='card-sub'>{f['note']}</span>"
                     f"</span><span>{txt}{mtxt} <span class='badge {cls}'>{lab}</span></span></div>")
     return f"""
     <div class='card'>
@@ -300,7 +303,7 @@ with tab_live:
     show = c1.radio("Show", ["Live now", "Today", "Whole week"], index=1, horizontal=True, key="live_show")
     only_flags = c2.toggle("Flagged games only", key="live_flags_only")
     auto = c3.toggle("Auto-refresh (60s)", value=True, key="live_auto")
-    FLAGS = lv.load_flags(HERE / "live_flags.csv")
+    FLAGS = BETS[BETS.market.isin(["spread", "total"])]
 
     @st.fragment(run_every=60 if auto else None)
     def live_board():
@@ -324,13 +327,10 @@ with tab_live:
             games = [g for g in games if g["game"] in set(wk.game)]
         # flag tally across the whole week (bets + leans; watch shown separately)
         allg = {g["game"]: g for g in live_scoreboard()}
-        paces = {}
-        for k, g in allg.items():
-            p, _ = live_model(g)
-            paces[k] = lv.pace_total(g, p["total"] if p is not None else None)
         tally = {}
         for _, f in wk.iterrows():
-            stt = lv.grade_flag(f, allg.get(f["game"]), paces.get(f["game"]))[0]
+            g = allg.get(f["game"])
+            stt = lv.grade_bet(f, g, game_model=live_model(g)[0] if g else None)["status"]
             grp = "watch" if f["tier"] == "WATCH" else "play"
             tally.setdefault(grp, {}).setdefault(stt, 0)
             tally[grp][stt] += 1
@@ -354,12 +354,169 @@ with tab_live:
             st_html(live_card(g, p, f))
 
     live_board()
-    st_html("<div class='meta'>Flags come from <code>live_flags.csv</code> (v3: BET = injury gap ATS and 15+ mph wind "
+    st_html("<div class='meta'>Flags come from <code>bets.csv</code> (v3: BET = injury gap ATS and 15+ mph wind "
             "under; LEAN = Sunday/Monday night under; WATCH = model total 7+ pts off and tiebreakers, not bets). "
             "Lines are the ones logged when each flag fired. Model numbers are the pre-game game flow projection; "
             "'On pace' adds the model's scoring rate for the time left to the current total, and live totals flags "
             "are graded on that pace (an under only counts as lost once the line is passed). Quarter cells read "
             "actual / model.</div>")
+
+@st.cache_data(ttl=30, show_spinner=False)
+def week_board_live(season, week):
+    return lv.parse_scoreboard(lv.fetch_week(season, week))
+
+
+@st.cache_data(ttl=24 * 3600, show_spinner=False)
+def week_board_done(season, week):
+    return lv.parse_scoreboard(lv.fetch_week(season, week))
+
+
+@st.cache_data(ttl=45, show_spinner=False)
+def box_live(event_id):
+    return lv.parse_box(lv.fetch_summary(event_id))
+
+
+@st.cache_data(ttl=24 * 3600, show_spinner=False)
+def box_done(event_id):
+    return lv.parse_box(lv.fetch_summary(event_id))
+
+
+def week_games(season, week):
+    games = week_board_done(season, week)
+    if any(g["state"] != "post" for g in games):  # week still in play: use the 30-second copy
+        games = week_board_live(season, week)
+    return {g["game"]: g for g in games}
+
+
+def grade_week(season, week):
+    rows = []
+    bets = BETS[(BETS.season == season) & (BETS.week == week)]
+    if bets.empty:
+        return pd.DataFrame()
+    try:
+        games = week_games(season, week)
+    except Exception as exc:  # noqa: BLE001
+        st.warning(f"Week {week}: could not reach ESPN ({exc})")
+        return pd.DataFrame()
+    for _, b in bets.iterrows():
+        g = games.get(b["game"])
+        box, gm = None, None
+        if g is not None and g["state"] != "pre":
+            if b["market"] in ("spread", "total"):
+                gm = live_model(g)[0]
+            else:
+                try:
+                    box = box_done(g["espn_id"]) if g["state"] == "post" else box_live(g["espn_id"])
+                except Exception:  # noqa: BLE001
+                    box = None
+        r = lv.grade_bet(b, g, box, gm)
+        is_prop = b["market"] not in ("spread", "total")
+        if is_prop:
+            what = f"{b['player']} {str(b['side']).upper()} {b['line']:g}"
+        elif b["market"] == "total":
+            what = f"{b['game'].replace('@', ' @ ')} {str(b['side']).upper()} {b['line']:g}"
+        else:
+            what = f"{b['side']} {b['line']:+g}"
+        rows.append({"week": week, "tier": b["tier"], "type": f"{b['tier']} · {b['bet']}", "bet": what,
+                     "game": b["game"], "state": g["state"] if g else "pre", "detail": g["detail"] if g else "",
+                     "kick": g["kick_utc"] if g else pd.NaT, "line": b["line"], "now": r["now"], "pace": r["pace"],
+                     "margin": r["margin"], "status": r["status"], "text": r["text"], "note": b["note"]})
+    return pd.DataFrame(rows)
+
+
+def bets_table(df):
+    body = ""
+    for r in df.itertuples():
+        cls, lab = BADGE[r.status]
+        tier_cls = "hit" if r.tier == "BET" else "final"
+        fmt = lambda v: "–" if v is None or pd.isna(v) else f"{v:.1f}" if abs(v - round(v)) > 0.05 else f"{v:.0f}"
+        live = "<span class='livedot'></span>" if r.state == "in" else ""
+        body += (f"<tr><td><span class='badge {tier_cls}'>{r.tier}</span> <b>{r.bet}</b>"
+                 f"<div class='card-sub'>{r.type.split(' · ', 1)[1]} · {r.game.replace('@', ' @ ')} · {live}{r.detail}</div></td>"
+                 f"<td>{fmt(r.now)}</td><td>{fmt(r.pace)}</td>"
+                 f"<td>{'–' if r.margin is None or pd.isna(r.margin) else f'{r.margin:+.1f}'}</td>"
+                 f"<td><span class='badge {cls}'>{lab}</span></td></tr>")
+    return (f"<div class='card'><div class='tbl-wrap'><table class='tbl'><tr><th>Bet</th><th>Now</th><th>Pace</th>"
+            f"<th>vs line</th><th>Status</th></tr>{body}</table></div></div>")
+
+
+def record_table(df):
+    done = df[df.status.isin(["won", "lost", "push"])]
+    if done.empty:
+        return None
+    g = done.groupby("type").status.value_counts().unstack(fill_value=0)
+    for c in ("won", "lost", "push"):
+        if c not in g:
+            g[c] = 0
+    g["record"] = g.won.astype(str) + "–" + g.lost.astype(str) + g.push.map(lambda x: f"–{x}" if x else "")
+    g["win %"] = (g.won / (g.won + g.lost).replace(0, np.nan) * 100).round(0)
+    g["units (-110)"] = (g.won * 100 / 110 - g.lost).round(2)
+    return g[["record", "win %", "units (-110)"]].reset_index().sort_values("type")
+
+
+with tab_bets:
+    bet_weeks = sorted(BETS[BETS.season == SEASON].week.unique().tolist())
+    if not bet_weeks:
+        st.info("No bets in bets.csv for this season yet.")
+    else:
+        cur_week = bet_weeks[-1]
+        try:
+            cur = live_scoreboard()
+            cur_week = max((w for w in bet_weeks if w <= (cur[0]["week"] if cur else cur_week)), default=cur_week)
+        except Exception:  # noqa: BLE001
+            pass
+        c1, c2, c3 = st.columns([1, 1.6, 1])
+        bweek = c1.selectbox("Week", bet_weeks, index=bet_weeks.index(cur_week), key="bets_week")
+        tiers = c2.multiselect("Show", ["BET", "LEAN", "WATCH", "PROP"], default=["BET", "LEAN", "PROP"],
+                               key="bets_tiers")
+        bauto = c3.toggle("Auto-refresh (60s)", value=True, key="bets_auto")
+
+        @st.fragment(run_every=60 if bauto else None)
+        def bets_board():
+            df = grade_week(SEASON, bweek)
+            if df.empty:
+                st.info("No bets for this week.")
+                return
+            df = df[df.tier.isin(tiers)]
+            now = pd.Timestamp.now(tz=EST)
+            n = df.status.value_counts()
+            st_html(f"<div class='meta'>Updated {now.strftime('%-I:%M:%S %p ET')} · "
+                    + " · ".join(f"<b>{n.get(k, 0)}</b> {k}" for k in
+                                 ["winning", "losing", "won", "lost", "push", "pending", "void"] if n.get(k, 0))
+                    + "</div>")
+            live = df[df.state == "in"].assign(k=lambda d: d.margin.abs()).sort_values("k")
+            pre = df[df.state == "pre"].sort_values("kick")
+            done = df[df.state == "post"].sort_values(["status", "margin"])
+            for title, part in [("In progress · closest to the line first", live), ("Upcoming", pre),
+                                ("Settled", done)]:
+                if len(part):
+                    st_html(f"<div class='section'>{title} ({len(part)})</div>")
+                    st_html(bets_table(part))
+
+        bets_board()
+
+        st_html("<div class='section'>Record by bet type</div>")
+        allw = pd.concat([grade_week(SEASON, w) for w in bet_weeks], ignore_index=True)
+        rec = record_table(allw) if len(allw) else None
+        if rec is None:
+            st.info("No settled bets yet.")
+        else:
+            st.dataframe(rec, width="stretch", hide_index=True)
+            wk_rec = []
+            for w, d in allw.groupby("week"):
+                d = d[d.status.isin(["won", "lost", "push"]) & (d.tier != "WATCH")]
+                if len(d):
+                    wk_rec.append({"week": w, "won": int((d.status == "won").sum()),
+                                   "lost": int((d.status == "lost").sum()), "push": int((d.status == "push").sum())})
+            if wk_rec:
+                st_html("<div class='meta'>By week (bets, leans and props; watch excluded)</div>")
+                st.dataframe(pd.DataFrame(wk_rec), width="stretch", hide_index=True)
+        st_html("<div class='meta'>Bets come from <code>bets.csv</code> in the repo: v3 team flags (BET = injury gap "
+                "ATS and 15+ mph wind under, LEAN = Sunday/Monday night under, WATCH = not a bet) and player props "
+                "flagged by the props model. Prop lines are the player's season average until you enter the DK line "
+                "in the file. <b>Pace</b> = current number plus the model's projection for the time left; live bets "
+                "are graded on pace, and an over counts as won (an under as lost) once the line is passed. "
+                "Records are graded at -110.</div>")
 
 with tab_slate:
     weeks = sorted(GAMES.week.unique())
