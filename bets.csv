@@ -2,7 +2,7 @@ season,week,game,tier,bet,market,player,team,side,line,model,note
 2026,11,NO@CHI,BET,Injury gap,spread,,,CHI,-11.5,,healthier team ATS (2+ more non-QB starters out on NO)
 2026,11,TEN@DAL,BET,Injury gap,spread,,,TEN,7.5,,healthier team ATS (2+ more non-QB starters out on DAL)
 2026,11,ARI@KC,BET,Wind under,total,,,under,40.5,,15+ mph outdoor wind
-2026,11,MIN@SF,LEAN,Primetime under,total,,,under,46.5,,Sunday night under
+2026,11,MIN@SF,LEAN,Primetime under,total,,,under,44.5,,Sunday night under (DK 44.5 at 7 PM; logged 46.5)
 2026,11,CIN@WAS,LEAN,Primetime under,total,,,under,54.5,,Monday night under
 2026,11,TB@DET,WATCH,Model total under,total,,,under,46.5,,7+ pt model total edge (watch only)
 2026,11,ARI@KC,WATCH,Model total over,total,,,over,40.5,,7+ pt model total edge (watch only)
@@ -21,9 +21,6 @@ season,week,game,tier,bet,market,player,team,side,line,model,note
 2026,11,ARI@KC,PROP,Rushing yards,rushing_yards,E.Johnson,KC,over,30.29,41.61,line = season avg until a DK line is entered
 2026,11,BAL@CAR,PROP,Passing yards,passing_yards,B.Young,CAR,under,266.33,223.43,line = season avg until a DK line is entered
 2026,11,BAL@CAR,PROP,Receiving yards,receiving_yards,Z.Flowers,BAL,under,76.44,66.37,line = season avg until a DK line is entered
-2026,11,CIN@WAS,PROP,Receiving yards,receiving_yards,T.Higgins,CIN,under,91.56,78.31,line = season avg until a DK line is entered
-2026,11,CIN@WAS,PROP,Rushing yards,rushing_yards,S.Perine,CIN,over,21.44,33.77,line = season avg until a DK line is entered
-2026,11,CIN@WAS,PROP,Rushing yards,rushing_yards,A.Ekeler,WAS,over,18.17,31.05,line = season avg until a DK line is entered
 2026,11,IND@HOU,PROP,Receiving yards,receiving_yards,T.Dell,HOU,under,56.33,40.62,line = season avg until a DK line is entered
 2026,11,IND@HOU,PROP,Rushing yards,rushing_yards,J.Taylor,IND,under,73.9,59.19,line = season avg until a DK line is entered
 2026,11,IND@HOU,PROP,Rushing yards,rushing_yards,D.Montgomery,HOU,over,27.6,42.42,line = season avg until a DK line is entered
@@ -41,9 +38,6 @@ season,week,game,tier,bet,market,player,team,side,line,model,note
 2026,11,MIA@BUF,PROP,Receiving yards,receiving_yards,K.Coleman,BUF,over,35.0,45.81,line = season avg until a DK line is entered
 2026,11,MIA@BUF,PROP,Receiving yards,receiving_yards,M.Washington,MIA,under,44.44,29.83,line = season avg until a DK line is entered
 2026,11,MIA@BUF,PROP,Rushing yards,rushing_yards,O.Gordon,MIA,under,67.38,52.92,line = season avg until a DK line is entered
-2026,11,MIN@SF,PROP,Passing yards,passing_yards,K.Cousins,MIN,under,254.7,223.33,line = season avg until a DK line is entered
-2026,11,MIN@SF,PROP,Receiving yards,receiving_yards,J.Watkins,SF,under,54.6,31.7,line = season avg until a DK line is entered
-2026,11,MIN@SF,PROP,Rushing yards,rushing_yards,A.Jones,MIN,under,57.89,40.53,line = season avg until a DK line is entered
 2026,11,NO@CHI,PROP,Receiving yards,receiving_yards,L.Burden,CHI,under,71.56,59.43,line = season avg until a DK line is entered
 2026,11,NO@CHI,PROP,Receiving yards,receiving_yards,C.Loveland,CHI,over,40.33,52.09,line = season avg until a DK line is entered
 2026,11,NO@CHI,PROP,Receiving yards,receiving_yards,B.Brown,NO,under,38.0,17.7,line = season avg until a DK line is entered
@@ -64,3 +58,30 @@ season,week,game,tier,bet,market,player,team,side,line,model,note
 2026,11,TEN@DAL,PROP,Receiving yards,receiving_yards,G.Helm,TEN,over,22.88,32.29,line = season avg until a DK line is entered
 2026,11,TEN@DAL,PROP,Receiving yards,receiving_yards,C.Dike,TEN,over,23.33,31.37,line = season avg until a DK line is entered
 2026,11,TEN@DAL,PROP,Rushing yards,rushing_yards,T.Pollard,TEN,over,69.78,79.28,line = season avg until a DK line is entered
+2026,11,MIN@SF,PROP,Receiving yards,receiving_yards,J.Watkins,SF,over,9.5,31.7,DK line
+2026,11,MIN@SF,PROP,Rushing yards,rushing_yards,D.Samuel,SF,over,9.5,18.35,DK line
+2026,11,MIN@SF,PROP,Receiving yards,receiving_yards,K.Allen,SF,over,25.5,49.01,DK line
+2026,11,CIN@WAS,PROP,Rushing yards,rushing_yards,S.Perine,CIN,over,20.5,33.77,DK line
+2026,11,MIN@SF,PROP,Rushing yards,rushing_yards,K.Black,SF,over,29.5,46.94,DK line
+2026,11,MIN@SF,PROP,Receiving yards,receiving_yards,J.Jefferson,MIN,under,89.5,60.77,DK line
+2026,11,MIN@SF,PROP,Receiving yards,receiving_yards,D.Samuel,SF,over,26.5,34.97,DK line
+2026,11,CIN@WAS,PROP,Receiving yards,receiving_yards,T.Burks,WAS,over,29.5,38.18,DK line
+2026,11,MIN@SF,PROP,Receiving yards,receiving_yards,M.Evans,SF,over,49.5,63.81,DK line
+2026,11,MIN@SF,PROP,Rushing yards,rushing_yards,A.Jones,MIN,over,31.5,40.53,DK line
+2026,11,MIN@SF,PROP,Receiving yards,receiving_yards,C.McCaffrey,SF,over,33.5,41.88,DK line
+2026,11,MIN@SF,PROP,Receiving yards,receiving_yards,G.Kittle,SF,over,49.5,59.48,DK line
+2026,11,CIN@WAS,PROP,Rushing yards,rushing_yards,C.Brown,CIN,over,44.5,53.18,DK line
+2026,11,CIN@WAS,PROP,Receiving yards,receiving_yards,D.Meyers,CIN,over,24.5,32.06,DK line
+2026,11,CIN@WAS,PROP,Receiving yards,receiving_yards,M.Gesicki,CIN,over,29.5,37.48,DK line
+2026,11,CIN@WAS,PROP,Receiving yards,receiving_yards,C.Brown,CIN,over,25.5,29.87,DK line
+2026,11,CIN@WAS,PROP,Receiving yards,receiving_yards,C.Okonkwo,WAS,under,45.5,40.07,DK line
+2026,11,MIN@SF,PROP,Receiving yards,receiving_yards,T.Hockenson,MIN,under,44.5,39.2,DK line
+2026,11,MIN@SF,PROP,Rushing yards,rushing_yards,J.Mason,MIN,over,39.5,44.15,DK line
+2026,11,MIN@SF,PROP,Rushing yards,rushing_yards,C.McCaffrey,SF,over,51.5,56.52,DK line
+2026,11,CIN@WAS,PROP,Passing yards,passing_yards,J.Burrow,CIN,under,309.5,281.24,DK line
+2026,11,MIN@SF,PROP,Passing yards,passing_yards,K.Cousins,MIN,under,239.5,223.33,DK line
+2026,11,CIN@WAS,PROP,Receiving yards,receiving_yards,S.Diggs,WAS,over,49.5,51.63,DK line
+2026,11,CIN@WAS,PROP,Receiving yards,receiving_yards,A.Williams,WAS,under,39.5,38.16,DK line
+2026,11,CIN@WAS,PROP,Receiving yards,receiving_yards,J.Chase,CIN,under,99.5,96.71,DK line
+2026,11,CIN@WAS,PROP,Receiving yards,receiving_yards,T.Higgins,CIN,under,79.5,78.31,DK line
+2026,11,MIN@SF,PROP,Passing yards,passing_yards,B.Purdy,SF,over,249.5,253.23,DK line
