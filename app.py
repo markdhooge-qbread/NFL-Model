@@ -6,7 +6,8 @@ and the chance the home team scores first, leads at half, scores last before hal
 Weights come from model.json (built offline by train.py). On start the app downloads this season's and last
 season's nflverse play-by-play to compute current team ratings.
 
-Tabs: Bets, Games, Players, Model (Teams, Flow Chart, Record).
+Tabs: Bets (every pick, graded live), Games (model preview, then live score), Players, Model (Teams, Any matchup,
+Flow Chart, Accuracy). Each stat lives on one tab: picks and their grading only on Bets.
 """
 import datetime
 import json
@@ -187,8 +188,7 @@ def game_card(g, p, actual=None):
       <div class='card-head'><div class='card-title'>{a} @ {h}</div><div class='card-sub'>{kick}</div></div>
       {act}
       <div class='summary'>
-        <span>Final <b>{p['away_score']:.1f}–{p['home_score']:.1f}</b></span>
-        <span>{fav} <b>{pct(fav_p)}</b></span>
+        <span>{fav} wins <b>{pct(fav_p)}</b></span>
         <span>Total <b>{p['total']:.1f}</b></span>
         <span>Plays <b>{p['total_plays']:.0f}</b></span>
         <span>Drives <b>{p['total_drives']:.1f}</b></span>
@@ -484,26 +484,18 @@ with tab_bets:
             cur_week = max((w for w in bet_weeks if w <= (cur[0]["week"] if cur else cur_week)), default=cur_week)
         except Exception:  # noqa: BLE001
             pass
-        c1, c2, c3 = st.columns([1, 1.4, 1.2])
+        c1, c2 = st.columns([1, 1.4])
         bweek = c1.selectbox("Week", bet_weeks, index=bet_weeks.index(cur_week), key="bets_week")
-        kind = c2.radio("Type", ["All", "Game", "Props"], horizontal=True, key="bets_kind")
-        grades = c3.multiselect("Grade", ["Best", "Good", "Pass"], default=["Best", "Good"], key="bets_grades")
-        wk_games = BETS[(BETS.season == SEASON) & (BETS.week == bweek)].game.unique().tolist()
-        c4, c5 = st.columns([2, 1])
-        game_pick = c4.selectbox("Game", ["All games"] + [x.replace("@", " @ ") for x in wk_games], key="bets_game")
-        bauto = c5.toggle("Auto-refresh (60s)", value=True, key="bets_auto")
+        show_pass = c2.toggle("Show Pass picks too", value=False, key="bets_pass")
+        grades = ["Best", "Good", "Pass"] if show_pass else ["Best", "Good"]
 
-        @st.fragment(run_every=60 if bauto else None)
+        @st.fragment(run_every=60)
         def bets_board():
             df = grade_week(SEASON, bweek)
             if df.empty:
                 st.info("No bets for this week.")
                 return
             df = df[df.grade.isin(grades)]
-            if kind != "All":
-                df = df[df.kind == ("Game" if kind == "Game" else "Prop")]
-            if game_pick != "All games":
-                df = df[df.game == game_pick.replace(" @ ", "@")]
             if df.empty:
                 st.info("No bets match these filters.")
                 return
@@ -543,7 +535,8 @@ with tab_bets:
                 if wk_rec:
                     st_html("<div class='meta'>By week, Best and Good only</div>")
                     st.dataframe(pd.DataFrame(wk_rec), width="stretch", hide_index=True)
-        st_html("<div class='meta'><b>Grade</b> reflects what held up in testing, not just the gap: "
+        with st.expander("What the grades and numbers mean"):
+            st_html("<div class='meta'><b>Grade</b> reflects what held up in testing, not just the gap: "
                 "<b>Best</b> = v3 bets (injury gap ATS, 15+ mph wind under). <b>Good</b> = v3 leans (Sunday/Monday "
                 "night unders) and props the props model still likes by 10%+ and 8+ yds. <b>Pass</b> = watch-only "
                 "flags, tiebreakers and thin props. Props top out at Good until they're tested against real DK "
@@ -557,14 +550,13 @@ with tab_games:
     weeks = sorted(GAMES.week.unique())
     unplayed = GAMES[GAMES.result.isna()]
     default_week = int(unplayed.week.min()) if len(unplayed) else int(max(weeks))
-    c1, c2, c3 = st.columns([1, 1.6, 1])
+    c1, c2 = st.columns([1, 2])
     gweek = c1.selectbox("Week", weeks, index=weeks.index(default_week), key="games_week")
-    gshow = c2.radio("Show", ["All", "Live now", "Flagged"], horizontal=True, key="games_show")
-    gauto = c3.toggle("Auto-refresh (60s)", value=True, key="games_auto")
-    st_html("<div class='meta'>Each game shows the model preview until kickoff, then switches to the live score, "
-            "with the model's quarter-by-quarter projection beside the actual and the week's bets graded live.</div>")
+    gshow = c2.radio("Show", ["All", "Live now", "Has picks"], horizontal=True, key="games_show")
+    st_html("<div class='meta'>Model preview until kickoff, then the live score with actual vs model by quarter. "
+            "Picks are graded on the Bets tab.</div>")
 
-    @st.fragment(run_every=60 if gauto else None)
+    @st.fragment(run_every=60)
     def games_board():
         wk = GAMES[GAMES.week == gweek].sort_values(["gameday", "gametime"])
         try:
@@ -572,8 +564,8 @@ with tab_games:
         except Exception as exc:  # noqa: BLE001
             espn = {}
             st.warning(f"Live scores unavailable (ESPN: {exc}). Showing model previews.")
-        flags = BETS[(BETS.season == SEASON) & (BETS.week == gweek) & BETS.market.isin(["spread", "total"])]
-        props = BETS[(BETS.season == SEASON) & (BETS.week == gweek) & ~BETS.market.isin(["spread", "total"])]
+        picks = BETS[(BETS.season == SEASON) & (BETS.week == gweek)]
+        no_flags = picks.iloc[0:0]
         now = pd.Timestamp.now(tz=EST)
         n_live = sum(1 for g in espn.values() if g["state"] == "in")
         st_html(f"<div class='meta'>Updated {now.strftime('%-I:%M:%S %p ET')} · {n_live} live</div>")
@@ -584,7 +576,7 @@ with tab_games:
             state = e["state"] if e else ("post" if pd.notna(g.result) else "pre")
             if gshow == "Live now" and state != "in":
                 continue
-            if gshow == "Flagged" and key not in set(flags.game):
+            if gshow == "Has picks" and key not in set(picks.game):
                 continue
             items.append((g, e, state, key))
         if not items:
@@ -593,13 +585,12 @@ with tab_games:
         order = {"in": 0, "pre": 1, "post": 2}
         items.sort(key=lambda t: (order[t[2]], str(t[0].gameday), str(t[0].gametime)))
         for g, e, state, key in items:
-            f = flags[flags.game == key].sort_values("tier_rank")
-            n_props = int((props.game == key).sum())
-            more = f"<div class='meta'>{n_props} prop pick{'s' if n_props != 1 else ''} for this game on the Bets tab</div>" if n_props else ""
+            n_picks = int((picks.game == key).sum())
+            more = f"<div class='meta'>{n_picks} pick{'s' if n_picks != 1 else ''} for this game on the Bets tab</div>" if n_picks else ""
             try:
                 if state == "in" and e is not None:
                     p, _ = live_model(e)
-                    st_html(live_card(e, p, f) + more)
+                    st_html(live_card(e, p, no_flags) + more)
                     continue
                 played = pd.notna(g.result)
                 p = predict_played(g.game_id) if played else None
@@ -611,17 +602,15 @@ with tab_games:
                         a_s, h_s = e["away_score"], e["home_score"]
                     else:
                         a_s, h_s = g.away_score, g.home_score
-                    label = (f"**{g.away_team} {a_s:.0f} @ {g.home_team} {h_s:.0f}** · FINAL · model "
-                             f"{p['away_score']:.1f}–{p['home_score']:.1f}")
+                    label = f"**{g.away_team} {a_s:.0f} @ {g.home_team} {h_s:.0f}** · FINAL"
                 else:
                     kick = f"{g.weekday} {g.gametime} ET" if isinstance(g.gametime, str) else ""
-                    label = (f"**{g.away_team} @ {g.home_team}** · {kick} · {p['away_score']:.1f}–{p['home_score']:.1f}"
-                             f" · {fav} {pct(max(p['home_win'], 1 - p['home_win']))} · Tot {p['total']:.1f}")
-                if len(f):
-                    label += f" · {len(f)} flag{'s' if len(f) != 1 else ''}"
+                    label = f"**{g.away_team} @ {g.home_team}** · {kick} · {fav} {pct(max(p['home_win'], 1 - p['home_win']))}"
+                if n_picks:
+                    label += f" · {n_picks} pick{'s' if n_picks != 1 else ''}"
                 with st.expander(label, expanded=False):
                     if state == "post" and e is not None:
-                        st_html(live_card(e, p, f) + more)
+                        st_html(live_card(e, p, no_flags) + more)
                         continue
                     actual = None
                     if played:
@@ -638,35 +627,13 @@ with tab_games:
                         hd = c[3].number_input(f"{g.home_team} def", 0.0, 10.0, round(INJ_DEFAULT[1], 1), 0.5, key=f"hd_{g.game_id}")
                         p = predict_upcoming(g.home_team, g.away_team, g.roof in ("dome", "closed"),
                                              {g.away_team: (ao, ad), g.home_team: (ho, hd)})
-                    card = game_card(g, p, actual)
-                    fh = flags_html(e, p, f) if len(f) else ""
-                    st_html(card.rstrip()[:-len("</div>")] + fh + "</div>" if fh else card)
+                    st_html(game_card(g, p, actual))
                     if more:
                         st_html(more)
             except Exception as exc:  # noqa: BLE001
                 st.error(f"{g.away_team} @ {g.home_team}: could not load ({exc})")
 
     games_board()
-
-    with st.expander("Any matchup (pick two teams)"):
-        teams = sorted(RATINGS.index)
-        c1, c2 = st.columns(2)
-        away = c1.selectbox("Away", teams, index=teams.index("MIA") if "MIA" in teams else 0)
-        home = c2.selectbox("Home", teams, index=teams.index("BUF") if "BUF" in teams else 1)
-        indoor = st.toggle("Indoor (dome or closed roof)", value=False)
-        c3, c4, c5, c6 = st.columns(4)
-        ai_o = c3.number_input(f"{away} off inj", 0.0, 10.0, round(INJ_DEFAULT[0], 1), 0.5)
-        ai_d = c4.number_input(f"{away} def inj", 0.0, 10.0, round(INJ_DEFAULT[1], 1), 0.5)
-        hi_o = c5.number_input(f"{home} off inj", 0.0, 10.0, round(INJ_DEFAULT[0], 1), 0.5)
-        hi_d = c6.number_input(f"{home} def inj", 0.0, 10.0, round(INJ_DEFAULT[1], 1), 0.5)
-        if home == away:
-            st.warning("Pick two different teams.")
-        else:
-            p = predict_upcoming(home, away, indoor, {away: (ai_o, ai_d), home: (hi_o, hi_d)})
-            st_html(game_card({"away_team": away, "home_team": home}, p))
-    st_html("<div class='meta'>Flags come from <code>bets.csv</code> (BET = injury gap ATS and 15+ mph wind under; "
-            "LEAN = Sunday/Monday night under; WATCH = not a bet). 'On pace' adds the model's scoring rate for the time "
-            "left to the current score; live flags are graded on it. Quarter cells read actual / model.</div>")
 
 with tab_players:
     from math import erf, sqrt
@@ -738,21 +705,13 @@ with tab_players:
             return (f"<td><b>{fmt.format(proj)}</b> <span class='card-sub'>avg {fmt.format(avg)}</span> "
                     f"{lean(proj, avg, mk, ok)}{act}</td>")
 
-        st_html(f"<div class='meta'>Projections use each player's season so far, last season, role trend, the "
-                f"defense's allowed stats and defense vs position, and the game flow model's script for this game "
-                f"({g.away_team} {gp['away_score']:.1f} – {g.home_team} {gp['home_score']:.1f}, {gp['total_plays']:.0f} plays). "
-                "<b>Def vs pos</b> = what this defense allows to the player's position, vs league average "
-                "(green = soft matchup; QBs show rushing allowed to QBs). ▲/▼ = projection 10%+ off the season average for "
-                "regular players (3+ games, 2.5+ targets or 4+ carries), the gaps that held up in testing."
-                + (" Players ruled Out or Doubtful are removed." if not played else "") + "</div>")
+        st_html("<div class='meta'>Bold = projection, gray = season average. ▲/▼ = projection 10%+ off the average "
+                "(the gaps that held up in testing). <b>Def vs pos</b> = what this defense allows to the position vs "
+                "league average (green = soft matchup)." + (" Out and Doubtful players are removed." if not played else "")
+                + "</div>")
         for team, opp in ((g.away_team, g.home_team), (g.home_team, g.away_team)):
             t_sk = sk[sk.posteam == team].copy()
             t_qb = qb[qb.posteam == team]
-            dv = t_sk.groupby("pos")[["dvp_rec", "dvp_rush"]].mean()
-            qdv = t_qb.dvp_pass.mean() if len(t_qb) else np.nan
-            chips = " · ".join([f"QB pass {dvp_txt(qdv)}"] +
-                               [f"{p} rec {dvp_txt(dv.dvp_rec.get(p))}" for p in ("WR", "TE", "RB") if p in dv.index] +
-                               ([f"RB rush {dvp_txt(dv.dvp_rush.get('RB'))}"] if "RB" in dv.index else []))
             qrows = "".join(
                 f"<tr><td><b>{r.name}</b> QB{' (Q)' if r.pid in q_ids and not played else ''}</td>"
                 + cell(r.proj_pass_yds, r.p_pass_yds, "pass_yds", r.pass_yds if played else None, True, r.n >= 3)
@@ -773,7 +732,6 @@ with tab_players:
             <div class='card'>
               <div class='card-head'><div class='card-title'>{team} vs {opp} defense</div>
                 <div class='card-sub'>projected {ctx[team]['c_pts']:.1f} pts</div></div>
-              <div class='meta'>{opp} allows: {chips}</div>
               <div class='tbl-wrap'><table class='tbl'>
                 <tr><th>QB</th><th>Pass yds</th><th>Def vs pos</th></tr>{qrows or "<tr><td colspan=3>No QB with a start this season yet</td></tr>"}</table></div>
               <div class='tbl-wrap' style='margin-top:8px'><table class='tbl'>
@@ -807,25 +765,19 @@ with tab_players:
                     "Not tested against real DraftKings lines, so treat it as a lean, not an edge.</div></div>")
 
 with tab_model:
-    model_sec = st.radio("Section", ["Teams", "Flow Chart", "Record"], horizontal=True, key="model_sec",
+    model_sec = st.radio("Section", ["Teams", "Any matchup", "Flow Chart", "Accuracy"], horizontal=True, key="model_sec",
                          label_visibility="collapsed")
-    st_html("<div class='meta'>Teams: the season stats the model runs on. Flow Chart: which team actually "
-            "played better in any finished game. Record: how the game model has done on games it never "
-            "trained on.</div>")
 
     if model_sec == "Teams":
-        show = {"o_third_conv": "3rd% off", "d_third_conv": "3rd% def", "o_third_ytg": "3rd ytg off",
-                "d_third_ytg": "3rd ytg def", "o_rz_trips": "RZ trips", "d_rz_trips": "RZ allowed",
-                "o_rz_td_pct": "RZ TD% off", "d_rz_td_pct": "RZ TD% def", "mid8_f": "Mid8 for", "mid8_a": "Mid8 ag",
-                "double_dip": "Double dip", "o_penalties": "Pen", "o_pen_yds": "Pen yds", "o_pace": "Pace",
-                "o_plays": "Off plays", "d_plays": "Def plays", "o_pts_drive": "Pts/drive", "d_pts_drive": "Pts/drive ag",
-                "o_epa_adj": "Adj EPA off", "d_epa_adj": "Adj EPA def", "o_early_sr": "Early SR", "o_sack_rate": "Sack% off",
-                "o_explosive": "Explosive", "o_three_out": "3&out", "first_score": "Scores 1st"}
+        show = {"o_epa_adj": "Adj EPA off", "d_epa_adj": "Adj EPA def", "o_pts_drive": "Pts/drive",
+                "d_pts_drive": "Pts/drive ag", "o_third_conv": "3rd% off", "d_third_conv": "3rd% def",
+                "o_rz_td_pct": "RZ TD% off", "d_rz_td_pct": "RZ TD% def", "o_pace": "Pace",
+                "o_plays": "Off plays", "d_plays": "Def plays"}
         prof = TEAMG.groupby("team")[list(show)].mean().rename(columns=show)
         prof.insert(0, "GP", TEAMG.groupby("team").size())
         prof["Total plays"] = prof["Off plays"] + prof["Def plays"]
-        pct_cols = ["3rd% off", "3rd% def", "RZ TD% off", "RZ TD% def", "Double dip", "Early SR", "Sack% off",
-                    "Explosive", "3&out", "Scores 1st"]
+        prof = prof.drop(columns=["Off plays", "Def plays"])
+        pct_cols = ["3rd% off", "3rd% def", "RZ TD% off", "RZ TD% def"]
         fmt = {c: "{:.0%}" for c in pct_cols}
         fmt.update({c: "{:.2f}" for c in ["Adj EPA off", "Adj EPA def", "Pts/drive", "Pts/drive ag"]})
         fmt.update({c: "{:.1f}" for c in prof.columns if c not in fmt and c != "GP"})
@@ -833,6 +785,23 @@ with tab_model:
                 "Adj EPA = EPA per play after removing score-state effects (defense: lower is better).</div>")
         st.dataframe(prof.sort_values("Adj EPA off", ascending=False).style.format(fmt), width="stretch",
                      height=600)
+
+    if model_sec == "Any matchup":
+        teams = sorted(RATINGS.index)
+        c1, c2 = st.columns(2)
+        away = c1.selectbox("Away", teams, index=teams.index("MIA") if "MIA" in teams else 0)
+        home = c2.selectbox("Home", teams, index=teams.index("BUF") if "BUF" in teams else 1)
+        indoor = st.toggle("Indoor (dome or closed roof)", value=False)
+        c3, c4, c5, c6 = st.columns(4)
+        ai_o = c3.number_input(f"{away} off inj", 0.0, 10.0, round(INJ_DEFAULT[0], 1), 0.5)
+        ai_d = c4.number_input(f"{away} def inj", 0.0, 10.0, round(INJ_DEFAULT[1], 1), 0.5)
+        hi_o = c5.number_input(f"{home} off inj", 0.0, 10.0, round(INJ_DEFAULT[0], 1), 0.5)
+        hi_d = c6.number_input(f"{home} def inj", 0.0, 10.0, round(INJ_DEFAULT[1], 1), 0.5)
+        if home == away:
+            st.warning("Pick two different teams.")
+        else:
+            p = predict_upcoming(home, away, indoor, {away: (ai_o, ai_d), home: (hi_o, hi_d)})
+            st_html(game_card({"away_team": away, "home_team": home}, p))
 
     if model_sec == "Flow Chart":
         done = GAMES[GAMES.result.notna()].sort_values(["week", "gameday"], ascending=False)
@@ -860,7 +829,7 @@ with tab_model:
             st.altair_chart(alt.layer(flow + zero, wp).resolve_scale(y="independent").properties(height=320),
                             width="stretch")
 
-    if model_sec == "Record":
+    if model_sec == "Accuracy":
         rows = []
         for r in MATCH.itertuples():
             g = GAMES[GAMES.game_id == r.game_id]
