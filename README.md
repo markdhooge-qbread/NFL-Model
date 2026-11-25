@@ -14,7 +14,11 @@ giveaways, pass rate leading and trailing, 4th down go rate, two-minute points, 
 score-adjusted EPA (EPA minus the league average for the same score and quarter, the NFL version of hockey score effects).
 
 ## Streamlit app
-`app.py` has four tabs: Bets (one ranked board of every game bet and prop in `bets.csv`: line, projection, edge, now/on pace and status, graded Best/Good/Pass by what held up in testing, with a week/today record in units and a record by bet type; add each week's picks to `bets.csv`), Games (every game in a week: the model preview with optional injury inputs until kickoff, then the live ESPN score, quarter-by-quarter actual vs model, and that game's flags graded live; auto-refreshes every 60 seconds; an 'Any matchup' box projects any two teams), Players (player projections with defense vs position and a DK line check), and Model, with three sections: Teams (season stat profiles), Flow Chart (cumulative score-adjusted EPA and win probability for any finished game) and Record (this season's hit rates on games the model never trained on).
+`app.py` has four tabs, and each stat lives on one of them:
+- **Bets**: one ranked board of every game bet and prop in `bets.csv` (line, projection, edge, now/on pace, status), graded Best/Good/Pass by what held up in testing, with the week/today record in units. Pass picks are hidden unless you turn them on. Record by bet type and the grade legend sit in collapsed sections. Add each week's picks to `bets.csv`.
+- **Games**: every game in a week. The model preview (win chance, total, plays, drives, points by quarter) until kickoff, then the live ESPN score with actual vs model by quarter. Refreshes every 60 seconds. Picks are not repeated here: each game just says how many it has on the Bets tab.
+- **Players**: player projections with defense vs position and a DK line check.
+- **Model**: Teams (the main season stats the model runs on), Any matchup (project any two teams), Flow Chart (cumulative score-adjusted EPA and win probability for any finished game) and Accuracy (this season's hit rates on games the model never trained on).
 
 - Run locally: `pip install -r requirements.txt`, then `streamlit run app.py`
 - Deploy: on Streamlit Community Cloud, create an app from this repo, branch `main`, main file `app.py`.
