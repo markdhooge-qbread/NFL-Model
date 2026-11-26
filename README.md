@@ -14,9 +14,10 @@ giveaways, pass rate leading and trailing, 4th down go rate, two-minute points, 
 score-adjusted EPA (EPA minus the league average for the same score and quarter, the NFL version of hockey score effects).
 
 ## Streamlit app
-`app.py` has four tabs, and each stat lives on one of them:
-- **Bets**: one ranked board of every game bet and prop in `bets.csv` (line, projection, edge, now/on pace, status), graded Best/Good/Pass by what held up in testing, with the week/today record in units. Pass picks are hidden unless you turn them on. Record by bet type and the grade legend sit in collapsed sections. Add each week's picks to `bets.csv`.
-- **Games**: every game in a week. The model preview (win chance, total, plays, drives, points by quarter) until kickoff, then the live ESPN score with actual vs model by quarter. Refreshes every 60 seconds. Picks are not repeated here: each game just says how many it has on the Bets tab.
+`app.py` has five tabs, and each stat lives on one of them:
+- **This week**: the same picks, tiers (Bet / Lean / Props / Watch / Hold) and wording as the "NFL This Week" web page, read from `page/<season>_wk<week>.json`, with every pick graded live from ESPN (now, pace, on pace / behind, hit / missed), a live-now strip, and "Played so far" finals with how the DK line and the model graded. Weeks without a page file fall back to the older `bets.csv` board.
+- **Games**: every game in a week. Open one for the page's matchup angles, QBs and model total, plus its picks graded live. The model preview (win chance, total, plays, drives, points by quarter) until kickoff, then the live ESPN score with actual vs model by quarter. Refreshes every 60 seconds. 
+- **Record**: the web page's season-to-date table by tier (from the page file), plus the older bets.csv record.
 - **Players**: player projections with defense vs position and a DK line check.
 - **Model**: Teams (the main season stats the model runs on), Any matchup (project any two teams), Flow Chart (cumulative score-adjusted EPA and win probability for any finished game) and Accuracy (this season's hit rates on games the model never trained on).
 
@@ -59,3 +60,8 @@ and 4th-quarter points close to no skill. The betting market's spread and total 
 ## Notebook
 `notebooks/nfl_game_flow_model.ipynb` is the Colab version with the full backtest and the drop-one-stat test.
 `flowlib.py` holds the feature code shared by the app and `train.py`.
+
+## Weekly page data
+`page/<season>_wk<week>.json` is written by the project's `simplify/build_page.sh` (as `page_data_<S>_wk<W>.json`) on
+every rebuild of the web page. Copy it here and push to `main` so the app shows the same picks; scores and grading
+then update live in the app on their own.
