@@ -97,3 +97,27 @@ def grade_pick(p, g, box=None, game_model=None):
     if b["player"]:
         b["team"] = player_team(b["player"], b["game"], box)
     return lv.grade_bet(pd.Series(b), g, box, game_model)
+
+
+def same_player(short, full):
+    """'A.St. Brown' / 'K.Johnson' vs a full name like 'Amon-Ra St. Brown' (first initial + last name)."""
+    if not short or not full or "." not in short:
+        return False
+    first, last = short.split(".", 1)
+    fp = str(full).split(" ", 1)
+    if len(fp) < 2:
+        return False
+    norm = lambda x: "".join(ch for ch in str(x).lower() if ch.isalpha())
+    sfx = {"jr", "sr", "ii", "iii", "iv", "v"}
+    rest = " ".join(w for w in fp[1].split() if norm(w) not in sfx)
+    return norm(rest) == norm(last) and norm(fp[0]).startswith(norm(first))
+
+
+def angle_sides(page, game, full_name, market):
+    """Sides ('over'/'under') that this game's matchup angles point to for one player prop."""
+    out = []
+    for a in (page or {}).get("angles", []):
+        k = a.get("prop_key")
+        if k and k[0] == game and k[2] == market and same_player(k[1], full_name):
+            out.append((k[3], a["title"]))
+    return out

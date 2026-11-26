@@ -659,9 +659,14 @@ def page_game_html(page, key, graded=None):
         for a in ang:
             to = " · ".join(x for x in [f"Points to {a['points_to']}" if a.get("points_to") and a["points_to"] != "No side" else "",
                                         f"Prop: {a['props']}" if a.get("props") else ""] if x)
+            ck = a.get("check") or {}
+            cf = ck.get("agree") is False or ck.get("angle_conflict")
+            ctag = (" <span class='badge push'>⚠ CONFLICT: NO PLAY</span>" if cf else
+                    " <span class='badge hit'>PROPS MODEL AGREES</span>" if ck.get("agree") else "")
             out += (f"<div class='flag-row' style='display:block'><b>{a['title']}</b> <span class='badge final'>"
-                    f"{a['evidence']}</span><div class='card-sub'>{a['detail']}</div>"
-                    + (f"<div class='card-sub'>{to}</div>" if to else "") + "</div>")
+                    f"{a['evidence']}</span>{ctag}<div class='card-sub'>{a['detail']}</div>"
+                    + (f"<div class='card-sub'>{to}</div>" if to else "")
+                    + (f"<div class='card-sub'>{ck['text']}</div>" if ck.get("text") else "") + "</div>")
     if graded is not None and len(graded):
         gp = graded[graded.game == key]
         if len(gp):
@@ -968,8 +973,14 @@ with tab_players:
                     continue
                 edge = proj - dk["line"]
                 play = abs(edge) >= pl.FLAG_MIN[mk] and dk["line"] > 0 and abs(edge) / dk["line"] >= .10
+                # matchup angles on this same prop: one pointing the other way is a conflict, so no play
+                sides = pg.angle_sides(pw_page, f"{g.away_team}@{g.home_team}", r.name, DK_MK[mk])
+                mside = "over" if edge > 0 else "under"
+                conflict = [t for sd, t in sides if sd != mside] if play else []
+                agree = [t for sd, t in sides if sd == mside] if play else []
                 rows.append(dict(name=r.name, pos=getattr(r, "pos", "QB"), team=team, mk=mk, lab=lab, proj=proj,
-                                 line=dk["line"], over=dk["over"], under=dk["under"], edge=edge, play=play, act=act))
+                                 line=dk["line"], over=dk["over"], under=dk["under"], edge=edge,
+                                 play=play and not conflict, conflict=conflict, agree=agree, act=act))
             return sorted(rows, key=lambda x: -abs(x["edge"]))
 
         def odds_for(x):
@@ -981,11 +992,19 @@ with tab_players:
                 bg, col = ("#14532d", "#86efac") if over else ("#7f1d1d", "#fca5a5")
                 tag = f"<span class='badge {'hit' if over else 'miss'}'>{'▲ OVER' if over else '▼ UNDER'}</span>"
                 style = f"background:{bg}33;color:#f8fafc"
+            elif x["conflict"]:
+                col, style = "#fde68a", "color:#cbd5e1"
+                tag = "<span class='badge push'>⚠ CONFLICT</span>"
             else:
                 col, tag, style = "#94a3b8", "", "color:#64748b"
             act = (f"<br><span class='card-sub'>act {x['act']:.0f}</span>" if x["act"] is not None and pd.notna(x["act"]) else "")
             who = f"{x['name']}{' (' + x['team'] + ')' if show_team else ''}"
-            return (f"<tr style='{style}'><td style='text-align:left'><b>{who}</b><br><span class='card-sub'>{x['lab']}</span></td>"
+            note = ""
+            if x["conflict"]:
+                note = f"<br><span class='card-sub' style='color:#fde68a'>Angle says {'over' if x['edge'] < 0 else 'under'}: {x['conflict'][0]}. No play.</span>"
+            elif x["agree"]:
+                note = "<br><span class='card-sub'>matchup angle agrees</span>"
+            return (f"<tr style='{style}'><td style='text-align:left'><b>{who}</b><br><span class='card-sub'>{x['lab']}</span>{note}</td>"
                     f"<td>{x['line']:g}<br><span class='card-sub'>o{x['over']:+d} u{x['under']:+d}</span></td>"
                     f"<td><b>{x['proj']:.0f}</b>{act}</td><td><b style='color:{col}'>{x['edge']:+.1f}</b><br>{tag}</td></tr>")
 
@@ -995,7 +1014,8 @@ with tab_players:
                   if pw_page and pw_page.get("dk_props") else "No DK prop lines pulled for this week")
         st_html(f"<div class='meta'>{pulled}. Edge = our projection minus the DK line. A prop is a play (green over, "
                 "red under) when the edge is 8+ yds and 10%+ of the line (15+ yds on passing yards), the gap that held "
-                "up in testing; the rest are greyed out. Props DK isn't offering are left out."
+                "up in testing; the rest are greyed out. ⚠ Conflict = a matchup angle points the other way on that prop, "
+                "so it is not a play. Props DK isn't offering are left out."
                 + (" Out and Doubtful players are removed." if not played else "") + "</div>")
         if best:
             st_html("<div class='card'><div class='card-head'><div class='card-title'>⭐ Best plays</div>"
