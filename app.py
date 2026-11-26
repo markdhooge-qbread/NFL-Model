@@ -23,6 +23,7 @@ import importlib
 
 import flowlib as fl
 import livelib as lv
+import pagelib as pg
 import playerlib as pl
 
 # Streamlit Cloud keeps imported helper modules in memory across code updates, so a new app.py can run against an
@@ -30,6 +31,7 @@ import playerlib as pl
 fl = importlib.reload(fl)
 pl = importlib.reload(pl)
 lv = importlib.reload(lv)
+pg = importlib.reload(pg)
 
 EST = ZoneInfo("America/New_York")
 TODAY = datetime.datetime.now(EST).date()
@@ -212,7 +214,7 @@ st_html(f"<div class='section'>🏈 NFL Game Flow Model · {SEASON} season</div>
         f"{SEASON - 1} early in the year. Model trained on {MODEL['seasons'][0]}–{MODEL['seasons'][1]} "
         f"({MODEL['games']:,} games).</div>")
 
-tab_bets, tab_games, tab_players, tab_model = st.tabs(["Bets", "Games", "Players", "Model"])
+tab_bets, tab_games, tab_record, tab_players, tab_model = st.tabs(["This week", "Games", "Record", "Players", "Model"])
 BETS = lv.load_bets(HERE / "bets.csv")
 
 
@@ -473,10 +475,204 @@ def record_table(df):
     return out.sort_values(["_r", "bet type"]).drop(columns="_r")
 
 
+# ----------------------------------------------------------------------------
+# The weekly page (same picks, wording and angles as the "NFL This Week" web page), graded live
+# ----------------------------------------------------------------------------
+PAGE_WEEKS = pg.page_weeks(HERE, SEASON)
+TIER_CLS = {"BET": "hit", "LEAN": "push", "PROP": "push", "PROP_REST": "pend", "WATCH": "pend", "HOLD": "miss"}
+
+
+def page_for(week):
+    return pg.load_page(HERE, SEASON, week)
+
+
+def grade_page(page, week):
+    """Every pick on the page with its live status. Uses ESPN (scores, box scores) and the game flow model."""
+    try:
+        games = week_games(SEASON, week)
+    except Exception as exc:  # noqa: BLE001
+        st.warning(f"Live scores unavailable (ESPN: {exc}).")
+        games = {}
+    boxes, models, rows = {}, {}, []
+    for p in page["picks"]:
+        g = games.get(p["game"])
+        b = pg.pick_to_bet(p)
+        box = gm = None
+        if g is not None and g["state"] != "pre":
+            if b is not None and b["player"]:
+                if p["game"] not in boxes:
+                    try:
+                        boxes[p["game"]] = box_done(g["espn_id"]) if g["state"] == "post" else box_live(g["espn_id"])
+                    except Exception:  # noqa: BLE001
+                        boxes[p["game"]] = None
+                box = boxes[p["game"]]
+            elif b is not None:
+                if p["game"] not in models:
+                    models[p["game"]] = team_model(p["game"], g)
+                gm = models[p["game"]]
+        r = pg.grade_pick(p, g, box, gm)
+        rows.append({**p, **{k: r[k] for k in ("status", "now", "pace", "margin", "text")},
+                     "state": g["state"] if g else "pre", "detail": g["detail"] if g else ""})
+    return pd.DataFrame(rows), games
+
+
+def kick_txt(s):
+    t = pd.Timestamp(s)
+    return t.strftime("%a %-I:%M %p")
+
+
+def pick_rows_html(df, games_meta, show_game=True):
+    fmt = lambda v: "–" if v is None or pd.isna(v) else f"{v:.0f}" if abs(v - round(v)) < 0.05 else f"{v:.1f}"
+    out = ""
+    for r in df.itertuples():
+        cls, lab = STATUS_LOOK[r.status]
+        color = {"hit": "#22c55e", "miss": "#ef4444"}.get(cls, "#475569")
+        live = "<span class='livedot'></span>" if r.state == "in" else ""
+        when = r.detail if r.state != "pre" else kick_txt(r.kick)
+        stats = ""
+        if r.state == "in" and r.now is not None and not pd.isna(r.now):
+            stats = f"<div class='bet-stats'>{r.text} · {'ahead' if (r.margin or 0) > 0 else 'behind'} by {fmt(abs(r.margin or 0))}</div>"
+        elif r.state == "post" and r.now is not None and not pd.isna(r.now):
+            stats = f"<div class='bet-stats'>Final: {r.text}</div>"
+        where = f"{r.game} · " if show_game else ""
+        out += (f"<div class='bet-row' style='border-left:4px solid {color}'>"
+                f"<div class='bet-top'><span><b>{r.pick}</b></span><span class='badge {cls}'>{lab}</span></div>"
+                f"{stats}<div class='card-sub'>{pg.plain(r._asdict(), games_meta)}</div>"
+                f"<div class='card-sub'>{where}{live}{when}</div></div>")
+    return f"<div class='card' style='padding:4px'>{out}</div>"
+
+
+def tier_head(key):
+    t = pg.TIERS[key]
+    rate = f" <span class='card-sub'>· {t['rate']}</span>" if t["rate"] else ""
+    return f"<div class='section'><span class='badge {TIER_CLS[key]}'>{t['label']}</span> {t['title']}{rate}</div>"
+
+
+def home_spread(g):
+    a, h = g["game"].split("@")
+    sp = g["spread"]
+    return "Pick" if sp == 0 else (f"{h} {sp:+g}" if sp < 0 else f"{a} {-sp:+g}")
+
+
+def final_grade(gm, e):
+    """Score and how the DK line and the page's model numbers graded, from the live ESPN result."""
+    a, h = gm["game"].split("@")
+    hs, as_ = e["home_score"], e["away_score"]
+    mg, tot = hs - as_, hs + as_
+    c = mg + gm["spread"]
+    line = "Push" if c == 0 else (f"{h} covered {gm['spread']:+g}" if c > 0 else f"{a} covered {-gm['spread']:+g}")
+    ou = ("Over" if tot > gm["total"] else "Under" if tot < gm["total"] else "Push") + f" {gm['total']:g}"
+    txt = f"DK {home_spread(gm)}, O/U {gm['total']:g}: {line}, {ou}."
+    ms = gm.get("model_spread")
+    if ms is not None:
+        side = h if ms < gm["spread"] else a
+        ok = "push" if c == 0 else ("right" if (c > 0) == (side == h) else "wrong")
+        tside = "Over" if gm["model_total"] > gm["total"] else "Under"
+        tok = "push" if tot == gm["total"] else ("right" if (tot > gm["total"]) == (tside == "Over") else "wrong")
+        txt += (f" Model had {h if ms < 0 else a} by {abs(ms):.1f}, total {gm['model_total']}: {side} side {ok}, "
+                f"{tside.lower()} {tok} (off by {abs(gm['model_total'] - tot):.1f}).")
+    return txt
+
+
+def page_view(page, week):
+    meta = {g["game"]: g for g in page["games"]}
+    df, espn = grade_page(page, week)
+    now = pd.Timestamp.now(tz=EST)
+    P = df[df.tier != "PROP_REST"] if len(df) else df
+    of = lambda k: P[P.tier == k] if len(P) else P
+    bets, leans, props, watch, hold = (of(k) for k in ("BET", "LEAN", "PROP", "WATCH", "HOLD"))
+    st_html(f"<div class='card-title' style='font-size:26px'>Week {page['week']}</div>"
+            f"<div style='font-size:15px'><b>{len(bets)} bets</b>, <b>{len(leans)} leans</b>, "
+            f"{len(props)} props and <b>{len(watch)} game{'s' if len(watch) != 1 else ''} to watch</b>."
+            f"{' One game is on hold for a QB check.' if len(hold) else ''}</div>"
+            f"<div class='meta'>Picks from the {page['run']} run. "
+            f"{page.get('lines') or 'Lines are nflverse consensus, so check each against DraftKings.'}</div>")
+    graded = P[P.tier.isin(["BET", "LEAN", "PROP"])] if len(P) else P
+    if len(graded):
+        w, l, u = units(graded)
+        on, behind = int((graded.status == "winning").sum()), int((graded.status == "losing").sum())
+        todo = int((graded.status == "pending").sum())
+        parts = [f"Week {week} <b>{w}–{l}</b>, <b>{u:+.1f}u</b>"]
+        if on or behind:
+            parts.append(f"Live <b style='color:#86efac'>{on} on pace</b>, <b style='color:#fca5a5'>{behind} behind</b>")
+        if todo:
+            parts.append(f"{todo} to play")
+        st_html(f"<div style='background:#1e293b;padding:8px 10px;border-radius:6px;font-size:14px;color:#f8fafc;"
+                f"margin-bottom:6px'>{' · '.join(parts)}</div>"
+                f"<div class='meta'>Bets, leans and top props · units at -110 · updated {now.strftime('%-I:%M:%S %p ET')}</div>")
+    live = [(meta[k], e) for k, e in espn.items() if k in meta and e["state"] == "in"]
+    if live:
+        st_html("<div class='section'><span class='livedot'></span>Live now</div>" + "".join(
+            f"<div class='bet-row'><b>{e['away']} {e['away_score']:.0f} – {e['home_score']:.0f} {e['home']}</b> "
+            f"<span class='card-sub'>· {e['detail']} · DK {home_spread(gm)}, O/U {gm['total']:g} · "
+            f"on pace {lv.pace_total(e, gm['model_total']) or 0:.1f}</span></div>" for gm, e in live))
+    done = [(gm, espn[gm["game"]]) for gm in page["games"] if gm["game"] in espn and espn[gm["game"]]["state"] == "post"]
+    if done:
+        html = ""
+        for gm, e in done:
+            gp = df[df.game == gm["game"]]
+            w_, l_ = int((gp.status == "won").sum()), int((gp.status == "lost").sum())
+            res = ", ".join(f"{r.pick.split(' (')[0]} {'won' if r.status == 'won' else 'lost' if r.status == 'lost' else r.status}"
+                            for r in gp.itertuples())
+            win, lose = (e["home"], e["away"]) if e["home_score"] >= e["away_score"] else (e["away"], e["home"])
+            sc = lambda t: e["home_score"] if t == e["home"] else e["away_score"]
+            html += (f"<div class='bet-row'><b>{win} {sc(win):.0f}, {lose} {sc(lose):.0f}</b>"
+                     f"<div class='card-sub'>{final_grade(gm, e)}</div>"
+                     + (f"<div class='card-sub'>Picks in this game: {w_}-{l_} ({res}).</div>" if len(gp) else "")
+                     + "</div>")
+        st_html("<div class='section'>Played so far</div>" f"<div class='card' style='padding:4px'>{html}</div>")
+    for key, part, limit in (("BET", bets, None), ("LEAN", leans, None), ("PROP", props, 5), ("WATCH", watch, None)):
+        if not len(part):
+            continue
+        st_html(tier_head(key))
+        st_html(pick_rows_html(part.head(limit) if limit else part, meta))
+        if limit and len(part) > limit:
+            with st.expander(f"Show {len(part) - limit} more props"):
+                st_html(pick_rows_html(part.iloc[limit:], meta))
+    if len(hold):
+        st_html(tier_head("HOLD"))
+        st_html("".join(f"<div class='bet-row'><b>{gk}: confirm QB</b><div class='card-sub'>Listed QB did not start "
+                        f"the last game.</div></div>" for gk in hold.game.unique()))
+    with st.expander("How the tiers work"):
+        st_html("<div class='meta'><b>Bet:</b> injury gap of 2+ non-QB starters with the healthier team favored "
+                "(83-56 ATS since 2015), 15+ mph outdoor wind unders (118-96), and 6-point teaser legs on small "
+                "underdogs (77% of legs won). <b>Lean:</b> Sunday and Monday night unders (224-183 overall, 46-50 "
+                "since 2024) and player prop unders, tested against season averages, not DraftKings lines. "
+                "<b>Watch:</b> model total 7+ points off the market; 113-111 over 11 seasons, never bets. "
+                "<b>Hold:</b> the listed QB did not start the team's last game. <b>Live status:</b> now = current "
+                "number, pace = now plus the model's projection for the time left. Teaser legs are graded on the "
+                "teased number.</div>")
+    return df
+
+
+def page_game_html(page, key, graded=None):
+    """Angles, QBs, model total and picks for one game, as on the web page's Games tab."""
+    meta = {g["game"]: g for g in page["games"]}
+    gm = meta.get(key)
+    if gm is None:
+        return ""
+    out = (f"<div class='meta'>QBs {gm['qbs']} · DK {home_spread(gm)}, O/U {gm['total']:g} · model total "
+           f"{gm['model_total']} ({gm['model_total'] - gm['total']:+.1f} vs market)</div>")
+    ang = [a for a in page["angles"] if a["game"] == key]
+    if ang:
+        out += "<div class='section'>Matchup angles</div>"
+        for a in ang:
+            to = " · ".join(x for x in [f"Points to {a['points_to']}" if a.get("points_to") and a["points_to"] != "No side" else "",
+                                        f"Prop: {a['props']}" if a.get("props") else ""] if x)
+            out += (f"<div class='flag-row' style='display:block'><b>{a['title']}</b> <span class='badge final'>"
+                    f"{a['evidence']}</span><div class='card-sub'>{a['detail']}</div>"
+                    + (f"<div class='card-sub'>{to}</div>" if to else "") + "</div>")
+    if graded is not None and len(graded):
+        gp = graded[graded.game == key]
+        if len(gp):
+            out += "<div class='section'>Model picks</div>" + pick_rows_html(gp, meta, show_game=False)
+    return f"<div class='card'>{out}</div>"
+
+
 with tab_bets:
-    bet_weeks = sorted(BETS[BETS.season == SEASON].week.unique().tolist())
+    bet_weeks = sorted(set(BETS[BETS.season == SEASON].week.unique().tolist()) | set(PAGE_WEEKS))
     if not bet_weeks:
-        st.info("No bets in bets.csv for this season yet.")
+        st.info("No picks for this season yet.")
     else:
         cur_week = bet_weeks[-1]
         try:
@@ -484,10 +680,21 @@ with tab_bets:
             cur_week = max((w for w in bet_weeks if w <= (cur[0]["week"] if cur else cur_week)), default=cur_week)
         except Exception:  # noqa: BLE001
             pass
+        if PAGE_WEEKS and cur_week < PAGE_WEEKS[-1] and cur_week not in PAGE_WEEKS:
+            cur_week = PAGE_WEEKS[-1]
         c1, c2 = st.columns([1, 1.4])
         bweek = c1.selectbox("Week", bet_weeks, index=bet_weeks.index(cur_week), key="bets_week")
-        show_pass = c2.toggle("Show Pass picks too", value=False, key="bets_pass")
-        grades = ["Best", "Good", "Pass"] if show_pass else ["Best", "Good"]
+        PAGE = page_for(bweek)
+        if PAGE is None:
+            show_pass = c2.toggle("Show Pass picks too", value=False, key="bets_pass")
+            grades = ["Best", "Good", "Pass"] if show_pass else ["Best", "Good"]
+        else:
+            c2.markdown("<div class='meta' style='margin-top:30px'>Same picks as the NFL This Week page, graded live</div>",
+                        unsafe_allow_html=True)
+
+        @st.fragment(run_every=60)
+        def page_board():
+            page_view(PAGE, bweek)
 
         @st.fragment(run_every=60)
         def bets_board():
@@ -518,9 +725,23 @@ with tab_bets:
             df = df.assign(_g=df.grade.map(GRADE_RANK)).sort_values(["_g", "norm"], ascending=[True, False])
             st_html(board_html(df))
 
-        bets_board()
+        if PAGE is not None:
+            page_board()
+        else:
+            bets_board()
 
-        with st.expander("Record by bet type (all weeks)"):
+with tab_record:
+    rec_page = page_for(PAGE_WEEKS[-1]) if PAGE_WEEKS else None
+    if rec_page is not None:
+        rr = rec_page["record"]
+        st_html("<div class='section'>Season to date</div>")
+        st.dataframe(pd.DataFrame(rr["rows"], columns=["Type", f"{SEASON} so far", "Long-run rate"]), width="stretch",
+                     hide_index=True)
+        st_html(f"<div class='meta'>Tracking started Week 11 (graded through Week {rr['through_week']}). Long-run rates "
+                "come from 2015-26 backtests and are what each tier is judged against. Same table as the web page.</div>")
+    bet_weeks = sorted(w for w in BETS[BETS.season == SEASON].week.unique().tolist() if w not in PAGE_WEEKS)
+    if bet_weeks:
+        with st.expander("Older bets.csv record by bet type"):
             allw = pd.concat([grade_week(SEASON, w) for w in bet_weeks], ignore_index=True)
             rec = record_table(allw) if len(allw) else None
             if rec is None:
@@ -554,7 +775,7 @@ with tab_games:
     gweek = c1.selectbox("Week", weeks, index=weeks.index(default_week), key="games_week")
     gshow = c2.radio("Show", ["All", "Live now", "Has picks"], horizontal=True, key="games_show")
     st_html("<div class='meta'>Model preview until kickoff, then the live score with actual vs model by quarter. "
-            "Picks are graded on the Bets tab.</div>")
+            "Open a game for its matchup angles and picks, graded live.</div>")
 
     @st.fragment(run_every=60)
     def games_board():
@@ -566,6 +787,12 @@ with tab_games:
             st.warning(f"Live scores unavailable (ESPN: {exc}). Showing model previews.")
         picks = BETS[(BETS.season == SEASON) & (BETS.week == gweek)]
         no_flags = picks.iloc[0:0]
+        gpage = page_for(int(gweek))
+        graded = None
+        if gpage is not None:
+            graded, _ = grade_page(gpage, int(gweek))
+            picks = graded[graded.tier != "PROP_REST"] if len(graded) else graded
+        extra = lambda key: page_game_html(gpage, key, graded) if gpage is not None else ""
         now = pd.Timestamp.now(tz=EST)
         n_live = sum(1 for g in espn.values() if g["state"] == "in")
         st_html(f"<div class='meta'>Updated {now.strftime('%-I:%M:%S %p ET')} · {n_live} live</div>")
@@ -586,11 +813,15 @@ with tab_games:
         items.sort(key=lambda t: (order[t[2]], str(t[0].gameday), str(t[0].gametime)))
         for g, e, state, key in items:
             n_picks = int((picks.game == key).sum())
-            more = f"<div class='meta'>{n_picks} pick{'s' if n_picks != 1 else ''} for this game on the Bets tab</div>" if n_picks else ""
+            more = (f"<div class='meta'>{n_picks} pick{'s' if n_picks != 1 else ''} for this game on the This week tab</div>"
+                    if n_picks and gpage is None else "")
             try:
                 if state == "in" and e is not None:
                     p, _ = live_model(e)
                     st_html(live_card(e, p, no_flags) + more)
+                    if gpage is not None:
+                        with st.expander(f"{key.replace('@', ' at ')}: matchup angles and picks"):
+                            st_html(extra(key))
                     continue
                 played = pd.notna(g.result)
                 p = predict_played(g.game_id) if played else None
@@ -610,7 +841,7 @@ with tab_games:
                     label += f" · {n_picks} pick{'s' if n_picks != 1 else ''}"
                 with st.expander(label, expanded=False):
                     if state == "post" and e is not None:
-                        st_html(live_card(e, p, no_flags) + more)
+                        st_html(live_card(e, p, no_flags) + more + extra(key))
                         continue
                     actual = None
                     if played:
@@ -630,6 +861,8 @@ with tab_games:
                     st_html(game_card(g, p, actual))
                     if more:
                         st_html(more)
+                    if gpage is not None:
+                        st_html(extra(key))
             except Exception as exc:  # noqa: BLE001
                 st.error(f"{g.away_team} @ {g.home_team}: could not load ({exc})")
 
