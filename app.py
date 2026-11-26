@@ -1008,6 +1008,9 @@ with tab_players:
                 if x["size_down"]:
                     tag += "<br><span class='badge push'>SIZE DOWN</span>"
                 style = f"background:{bg}33;color:#f8fafc"
+            elif x["conflict"]:
+                col, style = "#fde68a", "color:#cbd5e1"
+                tag = "<span class='badge push'>⚠ CONFLICT</span>"
             else:
                 col, tag, style = "#94a3b8", "", "color:#64748b"
             act = (f"<br><span class='card-sub'>act {x['act']:.0f}</span>" if x["act"] is not None and pd.notna(x["act"]) else "")
