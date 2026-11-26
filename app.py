@@ -1000,7 +1000,7 @@ with tab_players:
         def odds_for(x):
             return x["over"] if x["edge"] > 0 else x["under"]
 
-        def edge_row(x, show_team=False):
+        def edge_row(x, show_team=False, live=""):
             if x["play"]:
                 over = x["edge"] > 0
                 bg, col = ("#14532d", "#86efac") if over else ("#7f1d1d", "#fca5a5")
@@ -1022,68 +1022,119 @@ with tab_players:
                 note = "<br><span class='card-sub'>matchup angle agrees</span>"
             return (f"<tr style='{style}'><td style='text-align:left'><b>{who}</b><br><span class='card-sub'>{x['lab']}</span>{note}</td>"
                     f"<td>{x['line']:g}<br><span class='card-sub'>o{x['over']:+d} u{x['under']:+d}</span></td>"
-                    f"<td><b>{x['proj']:.0f}</b>{act}</td><td><b style='color:{col}'>{x['edge']:+.1f}</b><br>{tag}</td></tr>")
+                    f"<td><b>{x['proj']:.0f}</b>{act}</td><td><b style='color:{col}'>{x['edge']:+.1f}</b><br>{tag}</td>{live}</tr>")
 
-        all_rows = {t: dk_rows(t) for t in (g.away_team, g.home_team)}
-        best = sorted([x for t in all_rows.values() for x in t if x["play"]], key=lambda x: -abs(x["edge"]))[:3]
-        pulled = (f"DK lines pulled {pd.Timestamp(pw_page['dk_props'][0]['pulled']).tz_convert(EST).strftime('%a %-I:%M %p ET')}"
-                  if pw_page and pw_page.get("dk_props") else "No DK prop lines pulled for this week")
-        st_html(f"<div class='meta'>{pulled}. Edge = our projection minus the DK line. A prop is a play (green over, "
-                "red under) when the edge is 8+ yds and 10%+ of the line (15+ yds on passing yards), the gap that held "
-                "up in testing; the rest are greyed out. When a matchup angle points the other way on a play, "
-                "but the projection stays the play; the note says why they disagree, and SIZE DOWN means the angle type held up before. "
-                "Props DK isn't offering are left out."
-                + (" Out and Doubtful players are removed." if not played else "") + "</div>")
-        if best:
-            st_html("<div class='card'><div class='card-head'><div class='card-title'>⭐ Best plays</div>"
-                    "<div class='card-sub'>biggest edges vs DK in this game</div></div>"
-                    + "".join(f"<div class='bet-row'><div class='bet-top'><span><b>{x['name']}</b> ({x['team']}) "
-                              f"{x['lab'].lower()} {'over' if x['edge'] > 0 else 'under'} {x['line']:g} "
-                              f"<span class='card-sub'>({odds_for(x):+d})</span></span><span class='badge "
-                              f"{'hit' if x['edge'] > 0 else 'miss'}'>{x['edge']:+.1f}</span></div>"
-                              f"<div class='card-sub'>Projection {x['proj']:.0f} vs DK {x['line']:g}"
-                              + (" · <span style='color:#fde68a'>angle disagrees" + (", size down" if x["size_down"] else ", projection wins") + "</span>" if x["conflict"] else "")
-                              + "</div></div>"
-                              for x in best) + "</div>")
-        elif pw_page and pw_page.get("dk_props"):
-            st_html("<div class='meta'>No prop in this game clears the edge bar.</div>")
-        for team, opp in ((g.away_team, g.home_team), (g.home_team, g.away_team)):
-            rows = all_rows[team]
-            body = "".join(edge_row(x) for x in rows) or "<tr><td colspan=4>No DK prop lines for this team</td></tr>"
-            st_html(f"""
-            <div class='card'>
-              <div class='card-head'><div class='card-title'>{team} vs {opp} defense</div>
-                <div class='card-sub'>projected {ctx[team]['c_pts']:.1f} pts</div></div>
-              <div class='tbl-wrap'><table class='tbl'>
-                <tr><th style='text-align:left'>Player</th><th>DK line</th><th>Proj</th><th>Edge</th></tr>{body}</table></div>
-            </div>""")
-            with st.expander(f"{team}: every projection, Any TD and Def vs pos"):
-                t_sk = sk[sk.posteam == team].copy()
-                t_qb = qb[qb.posteam == team]
-                qrows = "".join(
-                    f"<tr><td><b>{r.name}</b> QB{' (Q)' if r.pid in q_ids and not played else ''}</td>"
-                    + cell(r.proj_pass_yds, r.p_pass_yds, "pass_yds", r.pass_yds if played else None, True, False)
-                    + f"<td>{dvp_txt(r.dvp_pass)}</td></tr>" for r in t_qb.itertuples())
-                t_sk["order"] = t_sk.proj_rec_yds + t_sk.proj_rush_yds
-                srows = "".join(
-                    f"<tr><td><b>{r.name}</b> {r.pos}{' (Q)' if r.pid in q_ids and not played else ''}</td>"
-                    + cell(r.proj_rec, r.p_rec, "rec", r.rec if played else None, r.p_tgt >= 1, False)
-                    + cell(r.proj_rec_yds, r.p_rec_yds, "rec_yds", r.rec_yds if played else None, r.p_tgt >= 1, False)
-                    + cell(r.proj_car, r.p_car, "car", r.car if played else None, r.p_car >= 2, False)
-                    + cell(r.proj_rush_yds, r.p_rush_yds, "rush_yds", r.rush_yds if played else None, r.p_car >= 2, False)
-                    + f"<td><b>{r.proj_td:.0%}</b>{'<br><span class=card-sub>TD</span>' if played and r.td > 0 else ''}</td>"
-                    + f"<td>{dvp_txt(r.dvp_rush if r.pos == 'QB' or (r.pos == 'RB' and r.p_car >= r.p_tgt) else r.dvp_rec)}</td></tr>"
-                    for r in t_sk.sort_values("order", ascending=False).itertuples())
+        # Live stats from the ESPN box score (same feed as the This week tab), refreshed every 60 seconds in a game.
+        gkey = f"{g.away_team}@{g.home_team}"
+        try:
+            espn_g = week_games(SEASON, int(pweek)).get(gkey)
+        except Exception:  # noqa: BLE001
+            espn_g = None
+        live_state = espn_g["state"] if espn_g else "pre"
+
+        def live_box(g_now):
+            if g_now is None or g_now["state"] == "pre":
+                return None
+            try:
+                return box_done(g_now["espn_id"]) if g_now["state"] == "post" else box_live(g_now["espn_id"])
+            except Exception:  # noqa: BLE001
+                return None
+
+        def live_cell(x, g_now, box):
+            """Current stat, pace and status for one DK prop row (status only for plays)."""
+            side = "over" if x["edge"] > 0 else "under"
+            b = pd.Series(dict(market=DK_MK[x["mk"]], side=side, line=x["line"], player=x["name"], team=x["team"],
+                               model=x["proj"]))
+            rr = lv.grade_bet(b, g_now, box)
+            if rr["now"] is None or pd.isna(rr["now"]):
+                return "<td>–</td>"
+            pace = f"<br><span class='card-sub'>pace {rr['pace']:.0f}</span>" if g_now["state"] == "in" else ""
+            badge = ""
+            if x["play"]:
+                cls, lab = STATUS_LOOK.get(rr["status"], ("pend", rr["status"].upper()))
+                badge = f"<br><span class='badge {cls}'>{lab}</span>"
+            return f"<td><b>{rr['now']:.0f}</b>{pace}{badge}</td>"
+
+        @st.fragment(run_every=60 if live_state == "in" else None)
+        def player_tables():
+            g_now = espn_g
+            if live_state == "in":
+                try:
+                    g_now = week_games(SEASON, int(pweek)).get(gkey) or espn_g
+                except Exception:  # noqa: BLE001
+                    pass
+            box = live_box(g_now)
+            show_live = g_now is not None and g_now["state"] != "pre" and box is not None
+            if g_now is not None and g_now["state"] == "in":
+                st_html(f"<div class='meta'><span class='livedot'></span><b>{g_now['away']} {g_now['away_score']:.0f} – "
+                        f"{g_now['home_score']:.0f} {g_now['home']}</b> · {g_now['detail']} · live stats from ESPN, "
+                        f"updated {pd.Timestamp.now(tz=EST).strftime('%-I:%M:%S %p ET')}. Now = current stat, pace = now "
+                        "plus our projection for the time left. Status shows for plays only.</div>")
+            elif g_now is not None and g_now["state"] == "post":
+                st_html(f"<div class='meta'><b>Final: {g_now['away']} {g_now['away_score']:.0f} – {g_now['home_score']:.0f} "
+                        f"{g_now['home']}</b> · Now = final stat from ESPN.</div>")
+            all_rows = {t: dk_rows(t) for t in (g.away_team, g.home_team)}
+            best = sorted([x for t in all_rows.values() for x in t if x["play"]], key=lambda x: -abs(x["edge"]))[:3]
+            pulled = (f"DK lines pulled {pd.Timestamp(pw_page['dk_props'][0]['pulled']).tz_convert(EST).strftime('%a %-I:%M %p ET')}"
+                      if pw_page and pw_page.get("dk_props") else "No DK prop lines pulled for this week")
+            st_html(f"<div class='meta'>{pulled}. Edge = our projection minus the DK line. A prop is a play (green over, "
+                    "red under) when the edge is 8+ yds and 10%+ of the line (15+ yds on passing yards), the gap that held "
+                    "up in testing; the rest are greyed out. When a matchup angle points the other way on a play, "
+                    "the projection stays the play; the note says why they disagree, and SIZE DOWN means the angle type held up before. "
+                    "Props DK isn't offering are left out."
+                    + (" Out and Doubtful players are removed." if not played else "") + "</div>")
+            if best:
+                st_html("<div class='card'><div class='card-head'><div class='card-title'>⭐ Best plays</div>"
+                        "<div class='card-sub'>biggest edges vs DK in this game</div></div>"
+                        + "".join(f"<div class='bet-row'><div class='bet-top'><span><b>{x['name']}</b> ({x['team']}) "
+                                  f"{x['lab'].lower()} {'over' if x['edge'] > 0 else 'under'} {x['line']:g} "
+                                  f"<span class='card-sub'>({odds_for(x):+d})</span></span><span class='badge "
+                                  f"{'hit' if x['edge'] > 0 else 'miss'}'>{x['edge']:+.1f}</span></div>"
+                                  f"<div class='card-sub'>Projection {x['proj']:.0f} vs DK {x['line']:g}"
+                                  + (" · <span style='color:#fde68a'>angle disagrees" + (", size down" if x["size_down"] else ", projection wins") + "</span>" if x["conflict"] else "")
+                                  + "</div></div>"
+                                  for x in best) + "</div>")
+            elif pw_page and pw_page.get("dk_props"):
+                st_html("<div class='meta'>No prop in this game clears the edge bar.</div>")
+            for team, opp in ((g.away_team, g.home_team), (g.home_team, g.away_team)):
+                rows = all_rows[team]
+                body = "".join(edge_row(x, live=live_cell(x, g_now, box) if show_live else "") for x in rows) or "<tr><td colspan=4>No DK prop lines for this team</td></tr>"
                 st_html(f"""
                 <div class='card'>
-                  <div class='meta'>Bold = projection, gray = season average. <b>Def vs pos</b> = what this defense allows to
-                  the position vs league average (green = soft matchup).</div>
+                  <div class='card-head'><div class='card-title'>{team} vs {opp} defense</div>
+                    <div class='card-sub'>projected {ctx[team]['c_pts']:.1f} pts</div></div>
                   <div class='tbl-wrap'><table class='tbl'>
-                    <tr><th>QB</th><th>Pass yds</th><th>Def vs pos</th></tr>{qrows or "<tr><td colspan=3>No QB with a start this season yet</td></tr>"}</table></div>
-                  <div class='tbl-wrap' style='margin-top:8px'><table class='tbl'>
-                    <tr><th>Player</th><th>Rec</th><th>Rec yds</th><th>Car</th><th>Rush yds</th><th>Any TD</th><th>Def vs pos</th></tr>
-                    {srows}</table></div>
+                    <tr><th style='text-align:left'>Player</th><th>DK line</th><th>Proj</th><th>Edge</th>{"<th>Now</th>" if show_live else ""}</tr>{body}</table></div>
                 </div>""")
+                with st.expander(f"{team}: every projection, Any TD and Def vs pos"):
+                    t_sk = sk[sk.posteam == team].copy()
+                    t_qb = qb[qb.posteam == team]
+                    qrows = "".join(
+                        f"<tr><td><b>{r.name}</b> QB{' (Q)' if r.pid in q_ids and not played else ''}</td>"
+                        + cell(r.proj_pass_yds, r.p_pass_yds, "pass_yds", r.pass_yds if played else None, True, False)
+                        + f"<td>{dvp_txt(r.dvp_pass)}</td></tr>" for r in t_qb.itertuples())
+                    t_sk["order"] = t_sk.proj_rec_yds + t_sk.proj_rush_yds
+                    srows = "".join(
+                        f"<tr><td><b>{r.name}</b> {r.pos}{' (Q)' if r.pid in q_ids and not played else ''}</td>"
+                        + cell(r.proj_rec, r.p_rec, "rec", r.rec if played else None, r.p_tgt >= 1, False)
+                        + cell(r.proj_rec_yds, r.p_rec_yds, "rec_yds", r.rec_yds if played else None, r.p_tgt >= 1, False)
+                        + cell(r.proj_car, r.p_car, "car", r.car if played else None, r.p_car >= 2, False)
+                        + cell(r.proj_rush_yds, r.p_rush_yds, "rush_yds", r.rush_yds if played else None, r.p_car >= 2, False)
+                        + f"<td><b>{r.proj_td:.0%}</b>{'<br><span class=card-sub>TD</span>' if played and r.td > 0 else ''}</td>"
+                        + f"<td>{dvp_txt(r.dvp_rush if r.pos == 'QB' or (r.pos == 'RB' and r.p_car >= r.p_tgt) else r.dvp_rec)}</td></tr>"
+                        for r in t_sk.sort_values("order", ascending=False).itertuples())
+                    st_html(f"""
+                    <div class='card'>
+                      <div class='meta'>Bold = projection, gray = season average. <b>Def vs pos</b> = what this defense allows to
+                      the position vs league average (green = soft matchup).</div>
+                      <div class='tbl-wrap'><table class='tbl'>
+                        <tr><th>QB</th><th>Pass yds</th><th>Def vs pos</th></tr>{qrows or "<tr><td colspan=3>No QB with a start this season yet</td></tr>"}</table></div>
+                      <div class='tbl-wrap' style='margin-top:8px'><table class='tbl'>
+                        <tr><th>Player</th><th>Rec</th><th>Rec yds</th><th>Car</th><th>Rush yds</th><th>Any TD</th><th>Def vs pos</th></tr>
+                        {srows}</table></div>
+                    </div>""")
+
+        player_tables()
 
         # DK line check
         st_html("<div class='section'>🔎 Line check</div>")
