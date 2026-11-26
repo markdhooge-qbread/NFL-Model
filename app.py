@@ -661,7 +661,9 @@ def page_game_html(page, key, graded=None):
                                         f"Prop: {a['props']}" if a.get("props") else ""] if x)
             ck = a.get("check") or {}
             cf = ck.get("agree") is False or ck.get("angle_conflict")
-            ctag = (" <span class='badge push'>⚠ CONFLICT: NO PLAY</span>" if cf else
+            ctag = (" <span class='badge final'>ANGLES CANCEL OUT</span>" if ck.get("angle_conflict") else
+                    (" <span class='badge push'>DISAGREES: SIZE DOWN</span>" if ck.get("weight") == "size down" else
+                     " <span class='badge final'>DISAGREES: PROJECTION WINS</span>") if cf else
                     " <span class='badge hit'>PROPS MODEL AGREES</span>" if ck.get("agree") else "")
             out += (f"<div class='flag-row' style='display:block'><b>{a['title']}</b> <span class='badge final'>"
                     f"{a['evidence']}</span>{ctag}<div class='card-sub'>{a['detail']}</div>"
@@ -973,15 +975,27 @@ with tab_players:
                     continue
                 edge = proj - dk["line"]
                 play = abs(edge) >= pl.FLAG_MIN[mk] and dk["line"] > 0 and abs(edge) / dk["line"] >= .10
-                # matchup angles on this same prop: one pointing the other way is a conflict, so no play
+                # matchup angles on this same prop. The props-model edge stays the play (Mark 2026-11-26); an angle
+                # pointing the other way only adds a "why they disagree" note, and one that held up before says size down.
                 sides = pg.angle_sides(pw_page, f"{g.away_team}@{g.home_team}", r.name, DK_MK[mk])
                 mside = "over" if edge > 0 else "under"
-                conflict = [t for sd, t in sides if sd != mside] if play else []
-                agree = [t for sd, t in sides if sd == mside] if play else []
+                conflict = [a for sd, a in sides if sd != mside] if play else []
+                agree = [a for sd, a in sides if sd == mside] if play else []
+                cancel = bool({sd for sd, _ in sides} >= {"over", "under"})
+                size_down = any(a["evidence"] == "Held before" for a in conflict) and not cancel
                 rows.append(dict(name=r.name, pos=getattr(r, "pos", "QB"), team=team, mk=mk, lab=lab, proj=proj,
-                                 line=dk["line"], over=dk["over"], under=dk["under"], edge=edge,
-                                 play=play and not conflict, conflict=conflict, agree=agree, act=act))
+                                 line=dk["line"], over=dk["over"], under=dk["under"], edge=edge, play=play,
+                                 conflict=conflict, agree=agree, cancel=cancel, size_down=size_down, act=act))
             return sorted(rows, key=lambda x: -abs(x["edge"]))
+
+        def why_note(x):
+            a = x["conflict"][0]
+            other = "over" if x["edge"] < 0 else "under"
+            if x["cancel"]:
+                return f"Angles split on this prop (one says {other}), so they cancel out. Going by the projection."
+            why = (a.get("check") or {}).get("why")
+            return f"Angle says {other} ({a['title']}). Why they disagree: " + (why or
+                   f"the projection already weighs this defense overall; this angle is {a['evidence'].lower()}, so the projection wins.")
 
         def odds_for(x):
             return x["over"] if x["edge"] > 0 else x["under"]
@@ -991,17 +1005,16 @@ with tab_players:
                 over = x["edge"] > 0
                 bg, col = ("#14532d", "#86efac") if over else ("#7f1d1d", "#fca5a5")
                 tag = f"<span class='badge {'hit' if over else 'miss'}'>{'▲ OVER' if over else '▼ UNDER'}</span>"
+                if x["size_down"]:
+                    tag += "<br><span class='badge push'>SIZE DOWN</span>"
                 style = f"background:{bg}33;color:#f8fafc"
-            elif x["conflict"]:
-                col, style = "#fde68a", "color:#cbd5e1"
-                tag = "<span class='badge push'>⚠ CONFLICT</span>"
             else:
                 col, tag, style = "#94a3b8", "", "color:#64748b"
             act = (f"<br><span class='card-sub'>act {x['act']:.0f}</span>" if x["act"] is not None and pd.notna(x["act"]) else "")
             who = f"{x['name']}{' (' + x['team'] + ')' if show_team else ''}"
             note = ""
             if x["conflict"]:
-                note = f"<br><span class='card-sub' style='color:#fde68a'>Angle says {'over' if x['edge'] < 0 else 'under'}: {x['conflict'][0]}. No play.</span>"
+                note = f"<br><span class='card-sub' style='color:#fde68a'>{why_note(x)}</span>"
             elif x["agree"]:
                 note = "<br><span class='card-sub'>matchup angle agrees</span>"
             return (f"<tr style='{style}'><td style='text-align:left'><b>{who}</b><br><span class='card-sub'>{x['lab']}</span>{note}</td>"
@@ -1014,8 +1027,9 @@ with tab_players:
                   if pw_page and pw_page.get("dk_props") else "No DK prop lines pulled for this week")
         st_html(f"<div class='meta'>{pulled}. Edge = our projection minus the DK line. A prop is a play (green over, "
                 "red under) when the edge is 8+ yds and 10%+ of the line (15+ yds on passing yards), the gap that held "
-                "up in testing; the rest are greyed out. ⚠ Conflict = a matchup angle points the other way on that prop, "
-                "so it is not a play. Props DK isn't offering are left out."
+                "up in testing; the rest are greyed out. When a matchup angle points the other way on a play, "
+                "but the projection stays the play; the note says why they disagree, and SIZE DOWN means the angle type held up before. "
+                "Props DK isn't offering are left out."
                 + (" Out and Doubtful players are removed." if not played else "") + "</div>")
         if best:
             st_html("<div class='card'><div class='card-head'><div class='card-title'>⭐ Best plays</div>"
@@ -1024,7 +1038,9 @@ with tab_players:
                               f"{x['lab'].lower()} {'over' if x['edge'] > 0 else 'under'} {x['line']:g} "
                               f"<span class='card-sub'>({odds_for(x):+d})</span></span><span class='badge "
                               f"{'hit' if x['edge'] > 0 else 'miss'}'>{x['edge']:+.1f}</span></div>"
-                              f"<div class='card-sub'>Projection {x['proj']:.0f} vs DK {x['line']:g}</div></div>"
+                              f"<div class='card-sub'>Projection {x['proj']:.0f} vs DK {x['line']:g}"
+                              + (" · <span style='color:#fde68a'>angle disagrees" + (", size down" if x["size_down"] else ", projection wins") + "</span>" if x["conflict"] else "")
+                              + "</div></div>"
                               for x in best) + "</div>")
         elif pw_page and pw_page.get("dk_props"):
             st_html("<div class='meta'>No prop in this game clears the edge bar.</div>")

@@ -114,10 +114,10 @@ def same_player(short, full):
 
 
 def angle_sides(page, game, full_name, market):
-    """Sides ('over'/'under') that this game's matchup angles point to for one player prop."""
+    """(side, angle) for each of this game's matchup angles that names this player prop."""
     out = []
     for a in (page or {}).get("angles", []):
         k = a.get("prop_key")
         if k and k[0] == game and k[2] == market and same_player(k[1], full_name):
-            out.append((k[3], a["title"]))
+            out.append((k[3], a))
     return out
