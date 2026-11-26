@@ -916,11 +916,21 @@ with tab_players:
         qb = with_ctx(qb.copy())
         qb["proj_pass_yds"] = pl.project(PMODEL, qb, "pass_yds") if len(qb) else []
 
-        def lean(proj, avg, mk, ok=True):
-            if not ok or pd.isna(avg) or avg <= 0:
+        # DraftKings prop lines from the weekly page file (pulled via The Odds API; no extra credits here)
+        DK_MK = {"pass_yds": "passing_yards", "rec_yds": "receiving_yards", "rush_yds": "rushing_yards",
+                 "rec": "receptions", "car": "rush_attempts"}
+        pw_page = page_for(int(pweek))
+        DKL = {(lv._norm(d["player"]), d["market"]): d for d in (pw_page or {}).get("dk_props", [])}
+
+        def dk_for(name, mk):
+            return DKL.get((lv._norm(name), DK_MK.get(mk, mk)))
+
+        def lean(proj, line, mk, ok=True):
+            """Over/under tag: projection vs the DraftKings line, only when DK has one."""
+            if not ok or line is None or line <= 0:
                 return ""
-            d = proj - avg
-            if abs(d) >= pl.FLAG_MIN[mk] and abs(d) / avg >= .10:
+            d = proj - line
+            if abs(d) >= pl.FLAG_MIN[mk] and abs(d) / line >= .10:
                 return "<span class='badge hit'>▲ over</span>" if d > 0 else "<span class='badge miss'>▼ under</span>"
             return ""
 
@@ -930,47 +940,111 @@ with tab_players:
             col = "#86efac" if v >= .10 else ("#fca5a5" if v <= -.10 else "#cbd5e1")
             return f"<b style='color:{col}'>{v:+.0%}</b>"
 
-        def cell(proj, avg, mk, actual=None, show=True, ok=True):
-            if not show:
+        def cell(proj, avg, mk, actual=None, show=True, ok=True, name=None):
+            dk = dk_for(name, mk) if name else None
+            if not show and dk is None:
                 return "<td>–</td>"
             fmt = "{:.1f}" if mk in ("rec", "car") else "{:.0f}"
             act = f"<br><span class='card-sub'>act {fmt.format(actual)}</span>" if actual is not None and pd.notna(actual) else ""
-            return (f"<td><b>{fmt.format(proj)}</b> <span class='card-sub'>avg {fmt.format(avg)}</span> "
-                    f"{lean(proj, avg, mk, ok)}{act}</td>")
+            dk_txt = (f"<br><span style='color:#38bdf8;font-weight:700'>DK {dk['line']:g}</span> "
+                      f"<span class='card-sub'>o{dk['over']:+d} u{dk['under']:+d}</span>") if dk else ""
+            return (f"<td><b>{fmt.format(proj)}</b> <span class='card-sub'>avg {fmt.format(avg)}</span>{dk_txt} "
+                    f"{lean(proj, dk['line'] if dk else None, mk, ok)}{act}</td>")
 
-        st_html("<div class='meta'>Bold = projection, gray = season average. ▲/▼ = projection 10%+ off the average "
-                "(the gaps that held up in testing). <b>Def vs pos</b> = what this defense allows to the position vs "
-                "league average (green = soft matchup)." + (" Out and Doubtful players are removed." if not played else "")
-                + "</div>")
+        # One row per DK prop: our projection, the DK line and odds, and the edge (projection minus line).
+        # A row is a play (green over / red under) when the edge clears the same bar that held up in testing:
+        # 8+ yds and 10%+ of the line (15+ yds on passing). Everything else is greyed out.
+        def dk_rows(team):
+            out = []
+            for r in qb[qb.posteam == team].itertuples():
+                out.append((r, "pass_yds", "Pass yds", r.proj_pass_yds, r.pass_yds if played else None))
+            for r in sk[sk.posteam == team].itertuples():
+                for mk, lab in (("rec_yds", "Rec yds"), ("rush_yds", "Rush yds"), ("rec", "Receptions"), ("car", "Carries")):
+                    out.append((r, mk, lab, getattr(r, "proj_" + mk), getattr(r, mk) if played else None))
+            rows = []
+            for r, mk, lab, proj, act in out:
+                dk = dk_for(r.name, mk)
+                if dk is None or pd.isna(proj):
+                    continue
+                edge = proj - dk["line"]
+                play = abs(edge) >= pl.FLAG_MIN[mk] and dk["line"] > 0 and abs(edge) / dk["line"] >= .10
+                rows.append(dict(name=r.name, pos=getattr(r, "pos", "QB"), team=team, mk=mk, lab=lab, proj=proj,
+                                 line=dk["line"], over=dk["over"], under=dk["under"], edge=edge, play=play, act=act))
+            return sorted(rows, key=lambda x: -abs(x["edge"]))
+
+        def odds_for(x):
+            return x["over"] if x["edge"] > 0 else x["under"]
+
+        def edge_row(x, show_team=False):
+            if x["play"]:
+                over = x["edge"] > 0
+                bg, col = ("#14532d", "#86efac") if over else ("#7f1d1d", "#fca5a5")
+                tag = f"<span class='badge {'hit' if over else 'miss'}'>{'▲ OVER' if over else '▼ UNDER'}</span>"
+                style = f"background:{bg}33;color:#f8fafc"
+            else:
+                col, tag, style = "#94a3b8", "", "color:#64748b"
+            act = (f"<br><span class='card-sub'>act {x['act']:.0f}</span>" if x["act"] is not None and pd.notna(x["act"]) else "")
+            who = f"{x['name']}{' (' + x['team'] + ')' if show_team else ''}"
+            return (f"<tr style='{style}'><td style='text-align:left'><b>{who}</b><br><span class='card-sub'>{x['lab']}</span></td>"
+                    f"<td>{x['line']:g}<br><span class='card-sub'>o{x['over']:+d} u{x['under']:+d}</span></td>"
+                    f"<td><b>{x['proj']:.0f}</b>{act}</td><td><b style='color:{col}'>{x['edge']:+.1f}</b><br>{tag}</td></tr>")
+
+        all_rows = {t: dk_rows(t) for t in (g.away_team, g.home_team)}
+        best = sorted([x for t in all_rows.values() for x in t if x["play"]], key=lambda x: -abs(x["edge"]))[:3]
+        pulled = (f"DK lines pulled {pd.Timestamp(pw_page['dk_props'][0]['pulled']).tz_convert(EST).strftime('%a %-I:%M %p ET')}"
+                  if pw_page and pw_page.get("dk_props") else "No DK prop lines pulled for this week")
+        st_html(f"<div class='meta'>{pulled}. Edge = our projection minus the DK line. A prop is a play (green over, "
+                "red under) when the edge is 8+ yds and 10%+ of the line (15+ yds on passing yards), the gap that held "
+                "up in testing; the rest are greyed out. Props DK isn't offering are left out."
+                + (" Out and Doubtful players are removed." if not played else "") + "</div>")
+        if best:
+            st_html("<div class='card'><div class='card-head'><div class='card-title'>⭐ Best plays</div>"
+                    "<div class='card-sub'>biggest edges vs DK in this game</div></div>"
+                    + "".join(f"<div class='bet-row'><div class='bet-top'><span><b>{x['name']}</b> ({x['team']}) "
+                              f"{x['lab'].lower()} {'over' if x['edge'] > 0 else 'under'} {x['line']:g} "
+                              f"<span class='card-sub'>({odds_for(x):+d})</span></span><span class='badge "
+                              f"{'hit' if x['edge'] > 0 else 'miss'}'>{x['edge']:+.1f}</span></div>"
+                              f"<div class='card-sub'>Projection {x['proj']:.0f} vs DK {x['line']:g}</div></div>"
+                              for x in best) + "</div>")
+        elif pw_page and pw_page.get("dk_props"):
+            st_html("<div class='meta'>No prop in this game clears the edge bar.</div>")
         for team, opp in ((g.away_team, g.home_team), (g.home_team, g.away_team)):
-            t_sk = sk[sk.posteam == team].copy()
-            t_qb = qb[qb.posteam == team]
-            qrows = "".join(
-                f"<tr><td><b>{r.name}</b> QB{' (Q)' if r.pid in q_ids and not played else ''}</td>"
-                + cell(r.proj_pass_yds, r.p_pass_yds, "pass_yds", r.pass_yds if played else None, True, r.n >= 3)
-                + f"<td>{dvp_txt(r.dvp_pass)}</td></tr>" for r in t_qb.itertuples())
-            t_sk["order"] = t_sk.proj_rec_yds + t_sk.proj_rush_yds
-            srows = "".join(
-                f"<tr><td><b>{r.name}</b> {r.pos}{' (Q)' if r.pid in q_ids and not played else ''}</td>"
-                + cell(r.proj_rec, r.p_rec, "rec", r.rec if played else None, r.p_tgt >= 1, r.n >= 3 and r.p_tgt >= 2.5)
-                + cell(r.proj_rec_yds, r.p_rec_yds, "rec_yds", r.rec_yds if played else None, r.p_tgt >= 1,
-                       r.n >= 3 and r.p_tgt >= 2.5)
-                + cell(r.proj_car, r.p_car, "car", r.car if played else None, r.p_car >= 2, r.n >= 3 and r.p_car >= 4)
-                + cell(r.proj_rush_yds, r.p_rush_yds, "rush_yds", r.rush_yds if played else None, r.p_car >= 2,
-                       r.n >= 3 and r.p_car >= 4)
-                + f"<td><b>{r.proj_td:.0%}</b>{'<br><span class=card-sub>TD</span>' if played and r.td > 0 else ''}</td>"
-                + f"<td>{dvp_txt(r.dvp_rush if r.pos == 'QB' or (r.pos == 'RB' and r.p_car >= r.p_tgt) else r.dvp_rec)}</td></tr>"
-                for r in t_sk.sort_values("order", ascending=False).itertuples())
+            rows = all_rows[team]
+            body = "".join(edge_row(x) for x in rows) or "<tr><td colspan=4>No DK prop lines for this team</td></tr>"
             st_html(f"""
             <div class='card'>
               <div class='card-head'><div class='card-title'>{team} vs {opp} defense</div>
                 <div class='card-sub'>projected {ctx[team]['c_pts']:.1f} pts</div></div>
               <div class='tbl-wrap'><table class='tbl'>
-                <tr><th>QB</th><th>Pass yds</th><th>Def vs pos</th></tr>{qrows or "<tr><td colspan=3>No QB with a start this season yet</td></tr>"}</table></div>
-              <div class='tbl-wrap' style='margin-top:8px'><table class='tbl'>
-                <tr><th>Player</th><th>Rec</th><th>Rec yds</th><th>Car</th><th>Rush yds</th><th>Any TD</th><th>Def vs pos</th></tr>
-                {srows}</table></div>
+                <tr><th style='text-align:left'>Player</th><th>DK line</th><th>Proj</th><th>Edge</th></tr>{body}</table></div>
             </div>""")
+            with st.expander(f"{team}: every projection, Any TD and Def vs pos"):
+                t_sk = sk[sk.posteam == team].copy()
+                t_qb = qb[qb.posteam == team]
+                qrows = "".join(
+                    f"<tr><td><b>{r.name}</b> QB{' (Q)' if r.pid in q_ids and not played else ''}</td>"
+                    + cell(r.proj_pass_yds, r.p_pass_yds, "pass_yds", r.pass_yds if played else None, True, False)
+                    + f"<td>{dvp_txt(r.dvp_pass)}</td></tr>" for r in t_qb.itertuples())
+                t_sk["order"] = t_sk.proj_rec_yds + t_sk.proj_rush_yds
+                srows = "".join(
+                    f"<tr><td><b>{r.name}</b> {r.pos}{' (Q)' if r.pid in q_ids and not played else ''}</td>"
+                    + cell(r.proj_rec, r.p_rec, "rec", r.rec if played else None, r.p_tgt >= 1, False)
+                    + cell(r.proj_rec_yds, r.p_rec_yds, "rec_yds", r.rec_yds if played else None, r.p_tgt >= 1, False)
+                    + cell(r.proj_car, r.p_car, "car", r.car if played else None, r.p_car >= 2, False)
+                    + cell(r.proj_rush_yds, r.p_rush_yds, "rush_yds", r.rush_yds if played else None, r.p_car >= 2, False)
+                    + f"<td><b>{r.proj_td:.0%}</b>{'<br><span class=card-sub>TD</span>' if played and r.td > 0 else ''}</td>"
+                    + f"<td>{dvp_txt(r.dvp_rush if r.pos == 'QB' or (r.pos == 'RB' and r.p_car >= r.p_tgt) else r.dvp_rec)}</td></tr>"
+                    for r in t_sk.sort_values("order", ascending=False).itertuples())
+                st_html(f"""
+                <div class='card'>
+                  <div class='meta'>Bold = projection, gray = season average. <b>Def vs pos</b> = what this defense allows to
+                  the position vs league average (green = soft matchup).</div>
+                  <div class='tbl-wrap'><table class='tbl'>
+                    <tr><th>QB</th><th>Pass yds</th><th>Def vs pos</th></tr>{qrows or "<tr><td colspan=3>No QB with a start this season yet</td></tr>"}</table></div>
+                  <div class='tbl-wrap' style='margin-top:8px'><table class='tbl'>
+                    <tr><th>Player</th><th>Rec</th><th>Rec yds</th><th>Car</th><th>Rush yds</th><th>Any TD</th><th>Def vs pos</th></tr>
+                    {srows}</table></div>
+                </div>""")
 
         # DK line check
         st_html("<div class='section'>🔎 Line check</div>")
@@ -985,8 +1059,9 @@ with tab_players:
             pick = lc1.selectbox("Player and market", [o[0] for o in opts], key="pl_lc")
             _, mk, r = opts[[o[0] for o in opts].index(pick)]
             proj = getattr(r, "proj_" + mk)
-            line = lc2.number_input("DK line", 0.0, 600.0, float(round(proj * 2) / 2 - 0.5 if proj > 1 else 0.5), 0.5,
-                                    key=f"pl_line_{pick}")
+            dk = dk_for(r.name, mk)
+            line = lc2.number_input("DK line", 0.0, 600.0, float(dk["line"]) if dk else
+                                    float(round(proj * 2) / 2 - 0.5 if proj > 1 else 0.5), 0.5, key=f"pl_line_{pick}")
             m = PMODEL["markets"][mk]
             med = proj + m.get("median_shift", 0)
             p_over = 1 - norm_cdf((line - med) / m["sd"])
@@ -995,7 +1070,8 @@ with tab_players:
                     f"<span>Typical outcome (median) <b>{med:.1f}</b></span><span>Over {line:g} <b>{p_over:.0%}</b></span>"
                     f"<span>Under <b>{1 - p_over:.0%}</b></span><span>Model side <b>{side}</b></span></div>"
                     f"<div class='meta'>Rough odds from the model's typical miss ({m['sd']:.0f} on yards in testing). "
-                    "Not tested against real DraftKings lines, so treat it as a lean, not an edge.</div></div>")
+                    + (f"DK line {dk['line']:g} (over {dk['over']:+d}, under {dk['under']:+d}) filled in from the latest pull. " if dk else "No DK line pulled for this one; type it in. ")
+                    + "Not yet proven against DraftKings lines over a full season, so treat it as a lean, not an edge.</div></div>")
 
 with tab_model:
     model_sec = st.radio("Section", ["Teams", "Any matchup", "Flow Chart", "Accuracy"], horizontal=True, key="model_sec",
