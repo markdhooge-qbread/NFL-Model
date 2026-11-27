@@ -14,7 +14,7 @@ import livelib as lv
 
 TIERS = {  # same labels and rates as the web page
     "BET": dict(label="BET", title="Bets", rate="Teaser legs win ~77% (need 74%)"),
-    "LEAN": dict(label="LEAN", title="Leans", rate="~52%, cooled since 2024"),
+    "LEAN": dict(label="LEAN", title="Leans", rate="~52-54%"),
     "PROP": dict(label="RESEARCH ONLY", title="Player props (not plays)", rate="tracked vs DK lines, typical-game chance vs the DK price"),
     "WATCH": dict(label="WATCH", title="Watch only", rate="113-111 historically"),
     "HOLD": dict(label="HOLD", title="Confirm the QB first", rate=""),
@@ -45,6 +45,8 @@ def plain(p, games):
     if p["cat"] == "Teaser leg":
         return ("Small underdog. Teasing 6 points moves it past 3 and 7, the two most common final margins. "
                 "Pair it with another leg.")
+    if p["cat"] == "Coach fade":
+        return p.get("why") or ""
     if p["cat"] == "Primetime under":
         return "Night-game unders have hit 55% since 2015, but only 46-50 since 2024."
     if p["cat"] == "Watch total":
@@ -66,6 +68,9 @@ def pick_to_bet(p):
     pick, cat = p["pick"], p["cat"]
     base = dict(game=p["game"], tier=p["tier"], bet=cat, player=None, team=None, model=None, note="")
     nums = re.findall(r"[+-]?\d+(?:\.\d+)?", pick)
+    if cat == "Coach fade":
+        # 'PIT +3.5 (-101)': the spread is the first number, the DK odds the second
+        return {**base, "market": "spread", "side": pick.split()[0], "line": float(nums[0])}
     if cat == "Teaser leg" or cat.startswith("Injury"):
         # 'GB +2.5 -> +8.5': grade the teased number (last one)
         return {**base, "market": "spread", "side": pick.split()[0], "line": float(nums[-1])}
