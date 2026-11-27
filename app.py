@@ -214,7 +214,8 @@ st_html(f"<div class='section'>🏈 NFL Game Flow Model · {SEASON} season</div>
         f"{SEASON - 1} early in the year. Model trained on {MODEL['seasons'][0]}–{MODEL['seasons'][1]} "
         f"({MODEL['games']:,} games).</div>")
 
-tab_bets, tab_games, tab_record, tab_players, tab_model = st.tabs(["This week", "Games", "Record", "Players", "Model"])
+tab_bets, tab_top, tab_games, tab_record, tab_players, tab_model = st.tabs(
+    ["This week", "Top bet", "Games", "Record", "Players", "Model"])
 BETS = lv.load_bets(HERE / "bets.csv")
 
 
@@ -736,6 +737,63 @@ with tab_bets:
             page_board()
         else:
             bets_board()
+
+def top_view(page, week):
+    """At most one bet per game (topbets/top_bet.py, page json 'top'), graded live. Same picks as the web page."""
+    tb = page.get("top") if page else None
+    if not tb:
+        st.info("No top-bet run for this week yet.")
+        return
+    try:
+        espn = week_games(SEASON, week)
+    except Exception:  # noqa: BLE001
+        espn = {}
+    picks = [g for g in tb["games"] if g.get("pick")]
+    r = tb["record"]
+    st_html(f"<div class='card-title' style='font-size:22px'>{len(picks)} top bet{'s' if len(picks) != 1 else ''} "
+            f"in {len(tb['games'])} games</div>"
+            f"<div class='meta'>One bet per game at most, only when a signal that held on seasons it was not built on "
+            f"fires and its win rate beats the DraftKings price by {tb['min_edge'] * 100:.0f}+ points: the injury gap with "
+            f"the healthier team favored, or 15+ mph wind unders. Most games should have none. Everything on the other "
+            f"tabs is still tracked.</div>"
+            f"<div class='meta'>Top-bet record (logged separately since {r['since']}): {r['w']}-{r['l']}"
+            f"{'-' + str(r['p']) if r['p'] else ''} from {r['logged']} logged.</div>")
+    out = ""
+    for g in picks:
+        p, e = g["pick"], espn.get(g["game"])
+        pk = {"game": g["game"], "pick": p["pick"], "cat": p["cat"], "tier": "BET", "why": p["why"], "kick": g["kick"]}
+        res = pg.grade_pick(pk, e, None, team_model(g["game"], e) if e is not None and e["state"] != "pre" else None)
+        status = {"win": "won", "loss": "lost", "push": "push"}.get(p.get("result"), res["status"])
+        cls, lab = STATUS_LOOK[status]
+        color = {"hit": "#22c55e", "miss": "#ef4444"}.get(cls, "#475569")
+        when = e["detail"] if e is not None and e["state"] != "pre" else kick_txt(g["kick"])
+        live = f"<div class='bet-stats'>{res['text']}</div>" if e is not None and e["state"] != "pre" and res.get("text") else ""
+        out += (f"<div class='bet-row' style='border-left:4px solid {color}'>"
+                f"<div class='bet-top'><span><b>{p['pick']} ({p['odds']:+d})</b></span><span class='badge {cls}'>{lab}</span></div>"
+                f"{live}<div class='card-sub'>{p['why']}</div>"
+                f"<div class='card-sub'>{g['game']} · {when} · edge {p['edge'] * 100:+.1f} pts vs DK"
+                f"{' · ' + p['hold'] if p.get('hold') else ''}</div></div>")
+    if out:
+        st_html("<div class='section'><span class='badge hit'>TOP</span> Top bets</div>"
+                f"<div class='card' style='padding:4px'>{out}</div>")
+    rest = "".join(f"<div class='bet-row'><b>{g['game'].replace('@', ' at ')}</b>"
+                   f"<div class='card-sub'>{g.get('near') or 'No top bet.'}</div></div>"
+                   for g in tb["games"] if not g.get("pick"))
+    if rest:
+        st_html(f"<div class='section'>No top bet</div><div class='card' style='padding:4px'>{rest}</div>")
+
+
+with tab_top:
+    if not PAGE_WEEKS:
+        st.info("No top bets for this season yet.")
+    else:
+        tweek = st.selectbox("Week", PAGE_WEEKS, index=len(PAGE_WEEKS) - 1, key="top_week")
+
+        @st.fragment(run_every=60)
+        def top_board():
+            top_view(page_for(tweek), tweek)
+
+        top_board()
 
 with tab_record:
     rec_page = page_for(PAGE_WEEKS[-1]) if PAGE_WEEKS else None
