@@ -15,7 +15,7 @@ import livelib as lv
 TIERS = {  # same labels and rates as the web page
     "BET": dict(label="BET", title="Bets", rate="Teaser legs win ~77% (need 74%)"),
     "LEAN": dict(label="LEAN", title="Leans", rate="~52-54%"),
-    "PROP": dict(label="PROPS", title="Player props", rate="~54% vs season avg, unproven vs DK"),
+    "PROP": dict(label="RESEARCH ONLY", title="Player props (not plays)", rate="tracked vs DK lines, typical-game chance vs the DK price"),
     "WATCH": dict(label="WATCH", title="Watch only", rate="113-111 historically"),
     "HOLD": dict(label="HOLD", title="Confirm the QB first", rate=""),
 }
@@ -53,6 +53,9 @@ def plain(p, games):
         g = games.get(p["game"], {})
         return f"Model says {g.get('model_total')}, market {g.get('total')}. Gaps this big have been a coin flip."
     why = p.get("why") or ""
+    t = re.search(r"^Typical game (\d+) \(average-game projection (\d+)\) vs DK ([\d.]+): (\d+)% to go (over|under), needs (\d+)%", why)
+    if t:
+        return f"Typical game {t[1]} yds (average {t[2]}) vs DK {t[3]}: {t[4]}% to go {t[5]}, needs {t[6]}%. Research only."
     k = re.search(r"Projection (\d+) vs DK ([\d.]+) \(season avg (\d+)\)", why)
     if k:
         return f"Projects {k[1]} yds vs the DK line of {k[2]} (season avg {k[3]})."
