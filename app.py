@@ -539,6 +539,7 @@ def pick_rows_html(df, games_meta, show_game=True):
         out += (f"<div class='bet-row' style='border-left:4px solid {color}'>"
                 f"<div class='bet-top'><span><b>{r.pick}</b></span><span class='badge {cls}'>{lab}</span></div>"
                 f"{stats}<div class='card-sub'>{pg.plain(r._asdict(), games_meta)}</div>"
+                + (f"<div class='card-sub'>Stake {stake}</div>" if isinstance(stake := getattr(r, "stake", ""), str) and stake else "") +
                 f"<div class='card-sub'>{where}{live}{when}</div></div>")
     return f"<div class='card' style='padding:4px'>{out}</div>"
 
@@ -584,11 +585,11 @@ def page_view(page, week):
     bets, leans, props, watch, hold = (of(k) for k in ("BET", "LEAN", "PROP", "WATCH", "HOLD"))
     st_html(f"<div class='card-title' style='font-size:26px'>Week {page['week']}</div>"
             f"<div style='font-size:15px'><b>{len(bets)} bets</b>, <b>{len(leans)} leans</b>, "
-            f"{len(props)} props and <b>{len(watch)} game{'s' if len(watch) != 1 else ''} to watch</b>."
+            f"{len(props)} research props (not plays) and <b>{len(watch)} game{'s' if len(watch) != 1 else ''} to watch</b>."
             f"{' One game is on hold for a QB check.' if len(hold) else ''}</div>"
             f"<div class='meta'>Picks from the {page['run']} run. "
             f"{page.get('lines') or 'Lines are nflverse consensus, so check each against DraftKings.'}</div>")
-    graded = P[P.tier.isin(["BET", "LEAN", "PROP"])] if len(P) else P
+    graded = P[P.tier.isin(["BET", "LEAN"])] if len(P) else P   # props are research only (Mark 2026-11-27)
     if len(graded):
         w, l, u = units(graded)
         on, behind = int((graded.status == "winning").sum()), int((graded.status == "losing").sum())
@@ -600,7 +601,7 @@ def page_view(page, week):
             parts.append(f"{todo} to play")
         st_html(f"<div style='background:#1e293b;padding:8px 10px;border-radius:6px;font-size:14px;color:#f8fafc;"
                 f"margin-bottom:6px'>{' · '.join(parts)}</div>"
-                f"<div class='meta'>Bets, leans and top props · units at -110 · updated {now.strftime('%-I:%M:%S %p ET')}</div>")
+                f"<div class='meta'>Bets and leans (props are research only) · units at -110 · updated {now.strftime('%-I:%M:%S %p ET')}</div>")
     live = [(meta[k], e) for k, e in espn.items() if k in meta and e["state"] == "in"]
     if live:
         st_html("<div class='section'><span class='livedot'></span>Live now</div>" + "".join(
@@ -611,7 +612,7 @@ def page_view(page, week):
     if done:
         html = ""
         for gm, e in done:
-            gp = df[df.game == gm["game"]]
+            gp = df[(df.game == gm["game"]) & ~df.tier.isin(["PROP", "PROP_REST"])]
             w_, l_ = int((gp.status == "won").sum()), int((gp.status == "lost").sum())
             res = ", ".join(f"{r.pick.split(' (')[0]} {'won' if r.status == 'won' else 'lost' if r.status == 'lost' else r.status}"
                             for r in gp.itertuples())
@@ -638,7 +639,9 @@ def page_view(page, week):
         st_html("<div class='meta'><b>Bet:</b> injury gap of 2+ non-QB starters with the healthier team favored "
                 "(83-56 ATS since 2015), 15+ mph outdoor wind unders (118-96), and 6-point teaser legs on small "
                 "underdogs (77% of legs won). <b>Lean:</b> Sunday and Monday night unders (224-183 overall, 46-50 "
-                "since 2024) and player prop unders, tested against season averages, not DraftKings lines. "
+                "since 2024) and coach fades. <b>Props are research only, not plays:</b> each DK prop is judged on its chance "
+                "of clearing the DK line in a typical game and tracked until that record is positive under the written rule. "
+                "<b>Stakes:</b> 1u bets, 0.5u leans and 2-team teasers, 0.25u props (paper), max 2 overs per game. "
                 "<b>Watch:</b> model total 7+ points off the market; 113-111 over 11 seasons, never bets. "
                 "<b>Hold:</b> the listed QB did not start the team's last game. <b>Live status:</b> now = current "
                 "number, pace = now plus the model's projection for the time left. Teaser legs are graded on the "
@@ -1135,15 +1138,16 @@ with tab_players:
             best = sorted([x for t in all_rows.values() for x in t if x["play"]], key=lambda x: -abs(x["edge"]))[:3]
             pulled = (f"DK lines pulled {pd.Timestamp(pw_page['dk_props'][0]['pulled']).tz_convert(EST).strftime('%a %-I:%M %p ET')}"
                       if pw_page and pw_page.get("dk_props") else "No DK prop lines pulled for this week")
-            st_html(f"<div class='meta'>{pulled}. Edge = our projection minus the DK line. A prop is a play (green over, "
+            st_html(f"<div class='meta'>{pulled}. Props are RESEARCH ONLY, not plays, until they show a positive record vs "
+                    "saved DK lines. Edge = our projection minus the DK line. A prop is flagged (green over, "
                     "red under) when the edge is 8+ yds and 10%+ of the line (15+ yds on passing yards), the gap that held "
                     "up in testing; the rest are greyed out. When a matchup angle points the other way on a play, "
                     "the projection stays the play; the note says why they disagree, and SIZE DOWN means the angle type held up before. "
                     "Props DK isn't offering are left out."
                     + (" Out and Doubtful players are removed." if not played else "") + "</div>")
             if best:
-                st_html("<div class='card'><div class='card-head'><div class='card-title'>⭐ Best plays</div>"
-                        "<div class='card-sub'>biggest edges vs DK in this game</div></div>"
+                st_html("<div class='card'><div class='card-head'><div class='card-title'>Research props (not plays)</div>"
+                        "<div class='card-sub'>biggest gaps vs DK in this game, tracked only</div></div>"
                         + "".join(f"<div class='bet-row'><div class='bet-top'><span><b>{x['name']}</b> ({x['team']}) "
                                   f"{x['lab'].lower()} {'over' if x['edge'] > 0 else 'under'} {x['line']:g} "
                                   f"<span class='card-sub'>({odds_for(x):+d})</span></span><span class='badge "
